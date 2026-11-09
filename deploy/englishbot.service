@@ -1,0 +1,24 @@
+[Unit]
+Description=Personal English Telegram mentor
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=englishbot
+Group=englishbot
+WorkingDirectory=/opt/englishbot/app
+ExecStart=/opt/englishbot/app/.venv/bin/python -m englishbot
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/englishbot/app/data
+
+[Install]
+WantedBy=multi-user.target
