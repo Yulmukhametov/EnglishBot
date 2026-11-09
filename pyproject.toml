@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "english-tg-mentor"
+version = "0.1.0"
+description = "Personal Telegram English mentor using OpenAI audio and text APIs"
+requires-python = ">=3.11"
+dependencies = ["aiogram>=3.20,<4", "openai>=2,<3", "pydantic-settings>=2.8,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.11,<1"]
+
+[tool.setuptools.packages.find]
+include = ["englishbot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
