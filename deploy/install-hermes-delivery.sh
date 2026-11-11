@@ -34,5 +34,21 @@ interpreter=$(cat -- "$skill_dir/python-path")
 exec "$interpreter" "$skill_dir/scripts/ordered_delivery.py" "$@"
 WRAPPER
 chmod 700 "$target/send-lesson"
+# Companion learning workflow, using the same isolated interpreter.
+mentor_target="$hermes_home/skills/english-mentor"
+mkdir -p "$mentor_target/scripts"
+install -m 600 "$repo_dir/hermes-skills/english-mentor/SKILL.md" "$mentor_target/SKILL.md"
+install -m 600 "$repo_dir/hermes-skills/english-mentor/scripts/learner.py" "$mentor_target/scripts/learner.py"
+# Credential resolver only; no message sending happens when the storage CLI imports it.
+install -m 600 "$repo_dir/hermes-skills/english-lesson-delivery/scripts/ordered_delivery.py" "$mentor_target/scripts/ordered_delivery.py"
+printf '%s\n' "$python_path" > "$mentor_target/python-path"
+cat > "$mentor_target/learner" <<'WRAPPER'
+#!/usr/bin/env bash
+set -euo pipefail
+skill_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+interpreter=$(cat -- "$skill_dir/python-path")
+exec "$interpreter" "$skill_dir/scripts/learner.py" "$@"
+WRAPPER
+chmod 700 "$mentor_target/learner"
 "$python_path" -c 'import edge_tts, dotenv, imageio_ffmpeg; print("Delivery dependencies OK")'
-echo 'Installed skill: english-lesson-delivery. Restart the Hermes gateway, then test the skill in Telegram.'
+echo 'Installed skills: english-lesson-delivery + english-mentor. Restart the gateway and start the initial assessment in Telegram.'

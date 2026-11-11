@@ -28,6 +28,8 @@ bash /home/hermes/EnglishBot-delivery/deploy/install-hermes-delivery.sh
 Python-окружение самого Hermes не изменяется. Skill появляется в текущем HERMES_HOME/skills,
 по умолчанию `/home/hermes/.hermes/skills/english-lesson-delivery`.
 
+Учебный профиль и начальная диагностика устанавливаются тем же обновлением: [HERMES_LEARNING.md](HERMES_LEARNING.md).
+
 Затем в Telegram отправьте:
 
 > Используй skill english-lesson-delivery и его программу send-lesson для голосового урока.

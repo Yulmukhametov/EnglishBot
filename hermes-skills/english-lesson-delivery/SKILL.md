@@ -10,6 +10,12 @@ Hermes's send_message tool and does NOT return MEDIA tags. It sends via Telegram
 Only the single numeric user in TELEGRAM_ALLOWED_USERS may receive lessons. Multiple-user
 profiles are deliberately refused. Never read or print tokens or the contents of .env/auth files.
 
+## Learning profile
+
+For English lessons and diagnostics, also load the companion skill `english-mentor` and use its
+`learner state` tool before planning the response. Save actual answers through that skill's CLI.
+During diagnostic questions, don't reveal an answer in the feedback before the learner attempts it.
+
 ## Lesson preparation
 
 Act as a patient English teacher. Compose feedback_ru (Russian explanation with corrected English
