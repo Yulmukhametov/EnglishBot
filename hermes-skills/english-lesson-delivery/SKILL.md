@@ -37,8 +37,13 @@ For english_only:
 {"request_id":"unique-task-id","mode":"english_only","reply_en":"Tell me what you did yesterday."}
 It can also take gap_exercise. Lesson keeps the existing input shape, optionally mode="lesson".
 All modes use the same send-lesson executable, acknowledgements, lock and retry protection.
-After success don't add another ordinary assistant message or MEDIA output. The requested
-single-text clarification must remain a single message in the chat.
+Do not draft/send the answer before invoking the delivery program. On success the program
+returns already_delivered=true and final_response="NO_REPLY". End your turn with EXACTLY
+NO_REPLY (no quotes, no markdown, no preamble or explanation). Hermes suppresses this token
+for the owner DM configured by the installer. A prose paraphrase or delivery confirmation would
+become an unwanted second response. A single-text clarification must remain one message.
+If delivery failed or was unconfirmed, do not emit NO_REPLY: report the failure honestly, without
+repeating the already-sent explanation or rerunning with a new request_id.
 
 ## Lesson preparation
 
@@ -150,7 +155,7 @@ The second English voice still continues the real conversation with one suitable
    lesson: four (voice feedback -> visible feedback text -> English voice -> hidden English text);
    english_only: two (English voice -> hidden English text); text_ru: one visible Russian text.
 4. On success, do not repeat any text, MEDIA tags or audio in the assistant's final response.
-   The tool already delivered the response. End this turn without an additional user-facing confirmation.
+   The tool already delivered the response. Your final response must be exactly NO_REPLY.
 5. On error/timeout stop. Never call the same lesson with a new request_id automatically.
    A message may have been sent even if the acknowledgement was lost. Tell the user the
    confirmed count from the result/state if available; do not claim full delivery.

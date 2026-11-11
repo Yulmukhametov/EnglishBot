@@ -6,7 +6,8 @@ description: Teach English with a persistent learner profile, initial level diag
 # Persistent English teacher
 
 Use this skill for the educational workflow and english-lesson-delivery for ordered voice/text
-messages. Keep the current voice preferences. No new external service or paid API is needed.
+messages. After that delivery tool confirms success, your final response must be exactly NO_REPLY;
+never write another normal answer repeating the delivered content. Keep the current voice preferences. No new external service or paid API is needed.
 Single authorized Telegram owner only. Do not print credentials or read .env/auth files yourself.
 
 ## Storage tool (required)
@@ -63,6 +64,9 @@ English equivalent and an example. Include the hint and replacement in original_
 when invoking english-lesson-delivery, so the comparison shows the learning substitution.
 Do not count Russian hints themselves as grammar errors. Their presence can inform vocabulary
 priorities; assess the surrounding English on its own merits.
+
+If the user resends a recording explicitly to test recognition, do not count it as another
+diagnostic answer or evidence of progress.
 
 An ASR transcript is not ground truth. If it contains a nonsensical fragment such as "in-stands
 of me", DO NOT assume it proves the learner pronounced or constructed that phrase incorrectly.

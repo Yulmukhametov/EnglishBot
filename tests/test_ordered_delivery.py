@@ -409,3 +409,14 @@ def test_natural_rewrite_does_not_change_minimal_error_diff(payload):
 def test_natural_alternative_requires_paired_fields_and_source(payload, update):
     with pytest.raises(delivery.DeliveryError):
         delivery.validate(dict(payload, **update))
+
+
+def test_silence_instruction_only_after_confirmed_delivery(tmp_path):
+    payload = dict(request_id='silence-1', mode='text_ru', text_ru='Уточни непонятное слово, пожалуйста.')
+    sender = Sender()
+    result = delivery.delivery_success(delivery.deliver(payload, tmp_path, sender))
+    assert result == dict(success=True, message_ids=[101], already_delivered=True, final_response='NO_REPLY')
+    for state in [dict(status='stopped_unconfirmed', message_ids=[101]),
+                  dict(status='complete', message_ids=[])]:
+        with pytest.raises(delivery.DeliveryError, match='confirmed delivery'):
+            delivery.delivery_success(state)

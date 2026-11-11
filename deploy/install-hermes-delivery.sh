@@ -51,4 +51,22 @@ exec "$interpreter" "$skill_dir/scripts/learner.py" "$@"
 WRAPPER
 chmod 700 "$mentor_target/learner"
 "$python_path" -c 'import edge_tts, dotenv, imageio_ffmpeg; print("Delivery dependencies OK")'
+# Direct delivery must suppress only the extra final reply, scoped to the owner's DM.
+# Hermes otherwise replaces a silence token addressed to a person with a visible notice.
+if owner_id=$("$python_path" - "$target/scripts" "$hermes_home" <<'PYOWNER'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+try:
+    from ordered_delivery import credentials
+    _, owner = credentials(Path(sys.argv[2]))
+    print(owner)
+except Exception:
+    raise SystemExit(1) from None
+PYOWNER
+); then
+  "$launcher" config set "platforms.telegram.channel_overrides.$owner_id.allow_silence" true
+else
+  echo 'Single Telegram owner not configured; finish Telegram setup before enabling per-chat silence.'
+fi
 echo 'Installed skills: english-lesson-delivery + english-mentor. Restart the gateway and start the initial assessment in Telegram.'

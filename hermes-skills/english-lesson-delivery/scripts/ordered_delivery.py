@@ -425,6 +425,13 @@ def deliver(payload, state_dir, sender, synthesizer=synthesize):
         return state
 
 
+def delivery_success(state):
+    if state.get("status") != "complete" or not state.get("message_ids"):
+        raise DeliveryError("Cannot suppress the gateway reply before confirmed delivery")
+    return {"success": True, "message_ids": state["message_ids"], "already_delivered": True,
+            "final_response": "NO_REPLY"}
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
@@ -454,7 +461,7 @@ def main():
             return await synthesize(lesson, directory, speech_settings(home))
 
         state = deliver(payload, home / "english-lesson-delivery-state", Telegram(token, chat_id), configured_synthesis)
-        print(json.dumps({"success": True, "message_ids": state["message_ids"]}))
+        print(json.dumps(delivery_success(state)))
     except DeliveryError as error:
         print(json.dumps({"success": False, "error": str(error)}))
         raise SystemExit(1) from None
