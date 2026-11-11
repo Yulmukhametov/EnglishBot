@@ -292,3 +292,11 @@ def test_new_vocabulary_is_added_to_existing_weekly_plan(store):
                       source='voice_transcript', notes='', errors=[], vocabulary_gaps=[
                           dict(russian='иностранцами', english='foreigners', example='I talk to foreigners.')]))
     assert store.state()['profile']['plan'][0]['vocabulary'] == ['foreigners']
+
+
+def test_objective_task_exposes_placeholder_and_options_without_answer_key(store):
+    ready(store)
+    store.record(answer('introduction', 'Hi.'))
+    task = store.next_task()['task']
+    assert task['gap_exercise'] == dict(sentence_en='She usually _____ to work by bus.', options=['go', 'goes', 'going'])
+    assert 'answers' not in task and 'topic' not in task

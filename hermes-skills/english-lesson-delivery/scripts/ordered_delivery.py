@@ -103,6 +103,15 @@ def feedback_display(payload):
             + "\n\n**Разбор:**\n" + "\n".join("> " + line for line in payload["feedback_ru"].split("\n")))
 
 
+def reply_display(payload):
+    exercise = payload.get("gap_exercise")
+    if not exercise:
+        return payload["reply_en"]
+    sentence = re.sub(r"_{3,}", "_____", exercise["sentence_en"])
+    return ("**Fill in the gap:**\n" + sentence
+            + "\n\n**Options:** " + " / ".join(exercise["options"]))
+
+
 def speech_segments(text):
     """Route Cyrillic prose to Russian and Latin examples to English voices."""
     text = spoken_text(text)
@@ -124,9 +133,9 @@ def speech_segments(text):
 
 def validate(payload):
     required = {"request_id", "feedback_ru", "reply_en"}
-    optional = {"original_en", "corrected_en"}
+    optional = {"original_en", "corrected_en", "gap_exercise"}
     if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - optional:
-        raise DeliveryError("Input needs request_id, feedback_ru, reply_en; original_en/corrected_en are optional")
+        raise DeliveryError("Input needs request_id, feedback_ru, reply_en; original_en/corrected_en/gap_exercise are optional")
     if ("original_en" in payload) != ("corrected_en" in payload):
         raise DeliveryError("original_en and corrected_en must be provided together")
     if not isinstance(payload["request_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", payload["request_id"]):
@@ -140,6 +149,18 @@ def validate(payload):
             raise DeliveryError(f"{key} must contain 1–1200 characters")
     if len(spoken_text(feedback_display(payload)).encode("utf-16-le")) // 2 > 4000:
         raise DeliveryError("Formatted feedback too long; shorten the explanation")
+    if "gap_exercise" in payload:
+        exercise = payload["gap_exercise"]
+        if not isinstance(exercise, dict) or set(exercise) != {"sentence_en", "options"}:
+            raise DeliveryError("gap_exercise requires sentence_en and options")
+        sentence, options = exercise["sentence_en"], exercise["options"]
+        if not isinstance(sentence, str) or len(sentence) > 500 or len(re.findall(r"_{3,}", sentence)) != 1:
+            raise DeliveryError("Gap sentence must contain exactly one _____ placeholder, up to 500 characters")
+        if not re.search(r"[A-Za-z]", sentence) or re.search(r"[А-Яа-яЁё]", sentence):
+            raise DeliveryError("Gap sentence must be in English")
+        if not isinstance(options, list) or not 2 <= len(options) <= 6 or any(
+                not isinstance(item, str) or not item.strip() or len(item) > 60 for item in options):
+            raise DeliveryError("Gap exercise needs 2–6 short options")
     return payload
 
 
@@ -237,7 +258,7 @@ async def combine_speech(paths, destination, pause_ms=100):
 
     playlist = destination.with_suffix(".concat")
     entries = []
-    pause = destination.with_name("language-pause.wav")
+    pause = destination.with_name(destination.stem + "-pause.wav")
     if pause_ms:
         await run("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", f"{pause_ms / 1000:.3f}",
                   "-c:a", "pcm_s16le", str(pause))
@@ -247,7 +268,7 @@ async def combine_speech(paths, destination, pause_ms=100):
             "areverse,silenceremove=start_periods=1:start_duration=0.02:"
             "start_threshold=-50dB:start_silence=0.04,areverse")
     for index, path in enumerate(paths):
-        cleaned = destination.with_name(f"trimmed-{index:02d}.wav")
+        cleaned = destination.with_name(f"{destination.stem}-trimmed-{index:02d}.wav")
         await run("-i", str(path), "-af", trim, "-ar", "24000", "-ac", "1",
                   "-c:a", "pcm_s16le", str(cleaned))
         if index and pause_ms:
@@ -274,16 +295,31 @@ async def synthesize(payload, directory, settings=None):
 
     segments = speech_segments(payload["feedback_ru"])
     pieces = [directory / f"feedback-part-{i:02d}.mp3" for i in range(len(segments))]
+    exercise = payload.get("gap_exercise")
+    if exercise:
+        before, after = re.split(r"_{3,}", exercise["sentence_en"])
+        reply_parts = [directory / "reply-before.mp3", directory / "reply-after.mp3"]
+        reply_jobs = [
+            piece("Choose the word that fits the gap. " + before.strip(), voices["en"], reply_parts[0]),
+            piece(after.strip() + " Your options are: " + ", ".join(exercise["options"])
+                  + ". Which word fits?", voices["en"], reply_parts[1]),
+        ]
+    else:
+        reply_parts = []
+        reply_jobs = [piece(spoken_text(payload["reply_en"]), voices["en"], paths[1])]
     # Both audio files must finish before any Telegram delivery starts.
     await asyncio.gather(
         *(piece(text, voices[language], path)
           for (language, text), path in zip(segments, pieces)),
-        piece(spoken_text(payload["reply_en"]), voices["en"], paths[1]),
+        *reply_jobs,
     )
     if len(pieces) == 1:
         pieces[0].replace(paths[0])
     else:
         await combine_speech(pieces, paths[0], settings["pause_ms"])
+    if reply_parts:
+        # This is a pedagogical gap, distinct from the short language-switch pause.
+        await combine_speech(reply_parts, paths[1], pause_ms=600)
     return paths
 
 
@@ -318,7 +354,7 @@ def deliver(payload, state_dir, sender, synthesizer=synthesize):
                 lambda: sender.send_voice(paths[0]),
                 lambda: sender.send_text(feedback_display(payload)),
                 lambda: sender.send_voice(paths[1]),
-                lambda: sender.send_text(payload["reply_en"], hidden=True),
+                lambda: sender.send_text(reply_display(payload), hidden=True),
             ]
             for index, step in enumerate(steps, 1):
                 state.update(status="awaiting_ack", step=index)

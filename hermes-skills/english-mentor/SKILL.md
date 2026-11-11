@@ -80,6 +80,13 @@ for diagnostic instructions can be one short sentence rather than the usual long
 Do not give the answer before the learner attempts a task. When a task ends up already answered
 in chat during explanation, don't treat a later repetition as independent evidence.
 
+For choice tasks, copy the returned gap_exercise object into the english-lesson-delivery
+payload. Never replace the literal _____ placeholder with "blank", a translation of it,
+or the correct answer in the text. The delivery program renders the sentence and choices
+itself and creates a real 600 ms gap in the English audio. Explain in the first Russian
+voice that the pause marks the missing word (you may name its location, e.g. after "usually").
+Do not reveal the correct option. Existing task IDs and progress remain unchanged.
+
 For `listening_short`, the storage tool returns a passage and a question. Put passage + question
 ONLY in the second English voice (and its automatic spoiler transcript). The first Russian
 voice/text merely explains how to answer without opening the spoiler; no answer or translation.

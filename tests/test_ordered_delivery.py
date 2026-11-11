@@ -269,3 +269,46 @@ def test_voice_settings_persist_and_reject_bad_values(tmp_path):
         with pytest.raises(delivery.DeliveryError, match='must be an integer'):
             delivery.speech_settings(tmp_path, change)
     assert delivery.speech_settings(tmp_path)['pause_ms'] == 80
+
+
+def test_gap_display_is_literal_placeholder_and_not_word_blank(tmp_path, payload):
+    payload['gap_exercise'] = dict(sentence_en='She usually ___ to work by bus.', options=['go', 'goes', 'going'])
+    delivery.validate(payload)
+    assert delivery.reply_display(payload) == '**Fill in the gap:**\nShe usually _____ to work by bus.\n\n**Options:** go / goes / going'
+    sender = Sender()
+    delivery.deliver(payload, tmp_path, sender, synth)
+    assert sender.events[3] == ('text', delivery.reply_display(payload), True)
+    assert 'blank' not in sender.events[3][1]
+
+
+@pytest.mark.parametrize('sentence', ['She usually blank to work.', '___ goes ___', ''])
+def test_gap_exercise_rejects_missing_or_multiple_placeholders(payload, sentence):
+    payload['gap_exercise'] = dict(sentence_en=sentence, options=['go', 'goes'])
+    with pytest.raises(delivery.DeliveryError, match='exactly one'):
+        delivery.validate(payload)
+
+
+async def test_gap_speech_uses_real_pause_not_spoken_placeholder(tmp_path, monkeypatch, payload):
+    import sys
+    from types import SimpleNamespace
+    calls, joins = [], []
+
+    class Communicate:
+        def __init__(self, text, voice, rate, pitch):
+            calls.append(text)
+
+        async def save(self, path):
+            Path(path).write_bytes(b'fake audio')
+
+    async def combine(paths, destination, pause_ms=100):
+        joins.append((destination.name, pause_ms))
+        destination.write_bytes(b'joined audio')
+    monkeypatch.setitem(sys.modules, 'edge_tts', SimpleNamespace(Communicate=Communicate))
+    monkeypatch.setattr(delivery, 'combine_speech', combine)
+    payload.update(feedback_ru='Вставь слово на месте паузы.',
+                   gap_exercise=dict(sentence_en='She usually _____ to work by bus.', options=['go', 'goes', 'going']))
+    await delivery.synthesize(payload, tmp_path)
+    assert calls == ['Вставь слово на месте паузы.', 'Choose the word that fits the gap. She usually',
+                     'to work by bus. Your options are: go, goes, going. Which word fits?']
+    assert joins == [('reply.mp3', 600)]
+    assert all('blank' not in part and '_____' not in part for part in calls)

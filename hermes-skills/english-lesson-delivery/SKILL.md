@@ -83,6 +83,15 @@ The second English voice still continues the real conversation with one suitable
    UTF-16-unit guard. This visual block is additional learning material, not read out in full:
    the first voice speaks feedback_ru only. Include the useful corrected English example there.
    Do not pass shell-interpolated prose. Write JSON using a file-writing tool or a quoted heredoc.
+   For a fill-in-the-gap exercise, also include:
+   "gap_exercise":{"sentence_en":"She usually _____ to work by bus.","options":["go","goes","going"]}
+   Copy this object from the learner task when available. sentence_en must contain exactly one
+   placeholder made of at least three underscores; the program displays it as _____. It builds
+   the second text from the sentence/options, instead of reply_en, so no model paraphrase can
+   turn the placeholder into the word "blank". The second voice has a 600 ms pause at that exact
+   position and then reads the choices; it does not say "blank" or "underscore". The first Russian
+   voice should explain that this pause is where the missing word belongs. Do not include the
+   correct answer. The normal short gap between languages is a separate setting.
 2. Run the executable `send-lesson` inside THIS skill directory:
    `<skill-directory>/send-lesson --input /absolute/path/to/lesson.json`
    Resolve the skill directory from this skill's actual location. Allow up to 180 seconds.
