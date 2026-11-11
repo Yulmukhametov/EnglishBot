@@ -184,7 +184,8 @@ async def test_synthesis_routes_languages_and_creates_valid_audio(tmp_path, monk
         pytest.skip('FFmpeg is required for audio assembly integration test')
     fixture = tmp_path / 'source.mp3'
     subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
-                    'anullsrc=r=24000:cl=mono', '-t', '0.12', '-c:a', 'libmp3lame', str(fixture)],
+                    'sine=frequency=440:sample_rate=24000:duration=0.16',
+                    '-af', 'adelay=250,apad=pad_dur=0.25', '-c:a', 'libmp3lame', str(fixture)],
                    check=True)
     audio_bytes = fixture.read_bytes()
     calls = []
@@ -200,14 +201,51 @@ async def test_synthesis_routes_languages_and_creates_valid_audio(tmp_path, monk
     paths = await delivery.synthesize(dict(feedback_ru='Вместо **go** скажи **went**.',
                                            reply_en='**What happened?**'), tmp_path)
     assert calls == [
-        ('Вместо', 'ru-RU-DmitryNeural', '-5%'),
-        ('go', 'en-US-GuyNeural', '-5%'),
-        ('скажи', 'ru-RU-DmitryNeural', '-5%'),
-        ('went.', 'en-US-GuyNeural', '-5%'),
-        ('What happened?', 'en-US-GuyNeural', '-5%')]
+        ('Вместо', 'ru-RU-SvetlanaNeural', '+0%'),
+        ('go', 'en-US-JennyNeural', '+0%'),
+        ('скажи', 'ru-RU-SvetlanaNeural', '+0%'),
+        ('went.', 'en-US-JennyNeural', '+0%'),
+        ('What happened?', 'en-US-JennyNeural', '+0%')]
     assert all(path.stat().st_size > 0 for path in paths)
     decoded = subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-i', str(paths[0]),
                               '-f', 's16le', '-ac', '1', '-ar', '24000', '-'],
                              check=True, capture_output=True).stdout
-    # Four 120 ms parts plus three 200 ms pauses, allowing codec padding.
-    assert len(decoded) / (24000 * 2) >= 1.0
+    # Four 160 ms tones: original edge silence is trimmed and no gaps are added.
+    assert 0.60 <= len(decoded) / (24000 * 2) <= 1.5
+
+
+def test_inline_corrections_and_complete_sentence(tmp_path, payload):
+    payload.update(original_en='Yesterday I go to work and buyed coffee.',
+                   corrected_en='Yesterday I went to work and bought coffee.')
+    text = delivery.feedback_display(payload)
+    assert 'Yesterday I ~~go~~ **went** to work and ~~buyed~~ **bought** coffee.' in text
+    assert '**Правильный вариант:**\nYesterday I went to work and bought coffee.' in text
+    sender = Sender()
+    delivery.deliver(payload, tmp_path, sender, synth)
+    assert sender.events[1] == ('text', text, False)
+    rendered = delivery.formatted_text(text)
+    assert '<s>go</s> <b>went</b>' in rendered
+    assert '<s>buyed</s> <b>bought</b>' in rendered
+
+
+@pytest.mark.parametrize(('before', 'after', 'expected'), [
+    ('I go school.', 'I go to school.', 'I go **to** school.'),
+    ('I discuss about work.', 'I discuss work.', 'I discuss ~~about~~ work.'),
+    ('I work.', 'I work.', 'I work.'),
+])
+def test_insertions_deletions_and_no_changes(payload, before, after, expected):
+    payload.update(original_en=before, corrected_en=after)
+    assert expected in delivery.feedback_display(payload)
+
+
+def test_formatted_user_html_stays_escaped_and_strikes_are_not_spoken():
+    text = '~~<script>~~ **went**'
+    assert delivery.formatted_text(text) == '<s>&lt;script&gt;</s> <b>went</b>'
+    assert delivery.spoken_text(text) == '<script> went'
+
+
+def test_missing_sentence_pair_and_oversized_feedback_rejected(payload):
+    with pytest.raises(delivery.DeliveryError, match='provided together'):
+        delivery.validate(dict(payload, original_en='I go.'))
+    with pytest.raises(delivery.DeliveryError, match='too long'):
+        delivery.validate(dict(payload, feedback_ru='😀' * 2000, original_en='I go.', corrected_en='I went.'))

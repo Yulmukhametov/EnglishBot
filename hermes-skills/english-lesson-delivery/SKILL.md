@@ -16,11 +16,11 @@ Act as a patient English teacher. Compose feedback_ru (Russian explanation with 
 examples) and reply_en (natural English continuation and one suitable question), max 2000
 characters per field. Use **bold** sparingly to highlight an incorrect word and its
 correct replacement, and short labels such as **Ошибка:** / **Правильно:** / **Почему:**.
-Only **bold** is supported; no HTML, tables, code fences, IPA or Cyrillic phonetic spelling
+Supported inline markup: **bold** and ~~strikethrough~~; no HTML, tables, code fences, IPA or Cyrillic phonetic spelling
 of English words. Write English words in Latin letters. Write short, natural spoken sentences
 with normal punctuation; prefer complete English examples over fragmented individual letters.
-The program strips bold markers before speech, uses Russian speech for Cyrillic prose and
-English speech for Latin examples, and assembles one feedback voice note with short pauses.
+The program strips formatting markers before speech, uses Russian speech for Cyrillic prose and
+English speech for Latin examples, and assembles one feedback voice note without artificial gaps. Very quiet edge silence is shortened.
 The English continuation is always spoken by the English voice. Both text messages retain
 supported bold formatting; the whole second text is also under a spoiler.
 Preserve intended meaning and distinguish errors from optional style.
@@ -33,7 +33,18 @@ are not audio evidence. Diagnosis of level is provisional. Adapt to the user's g
    private temporary directory. Use a stable request_id for this ONE lesson (incoming Telegram
    message ID where available; otherwise generate a UUID once and keep it for this attempt).
    Shape:
-   {"request_id":"unique-lesson-id","feedback_ru":"...","reply_en":"..."}
+   {"request_id":"unique-lesson-id","feedback_ru":"...","reply_en":"...",
+    "original_en":"Yesterday I go to work.","corrected_en":"Yesterday I went to work."}
+   For correction of a specific English utterance, always include original_en and corrected_en
+   together, plain text without formatting, max 1200 characters each. Copy original_en verbatim
+   from the learner's text or recognized transcript, preserving mistakes. Never invent an original
+   sentence if none was provided. corrected_en must preserve intended meaning and correct only
+   actual errors, not gratuitously rewrite style. For other conversation/homework, omit both fields.
+   The program itself compares the words and adds the visible block:
+   learner sentence with ~~deleted words~~ **inserted words**, followed by the complete corrected
+   sentence, then feedback_ru. Keep feedback concise so the full first text fits Telegram's 4000
+   UTF-16-unit guard. This visual block is additional learning material, not read out in full:
+   the first voice speaks feedback_ru only. Include the useful corrected English example there.
    Do not pass shell-interpolated prose. Write JSON using a file-writing tool or a quoted heredoc.
 2. Run the executable `send-lesson` inside THIS skill directory:
    `<skill-directory>/send-lesson --input /absolute/path/to/lesson.json`
@@ -57,6 +68,10 @@ share one process lock. Other Hermes outputs/notifications can still arrive inde
 This skill is not a replacement for a complete learning database or validated pronunciation
 assessment. It addresses message ordering. Edge TTS is used without an OpenAI audio API key;
 its availability and voice quality must be tested on the target server. Two Edge voices are used:
-ru-RU-DmitryNeural for Russian, en-US-GuyNeural for English, at -5% rate.
+ru-RU-SvetlanaNeural for Russian, en-US-JennyNeural for English, at normal rate (+0%).
+Write feedback like a friendly tutor speaking naturally: short sentences, no formal preamble,
+no dramatic narration, no excessive headings, and avoid switching languages for individual letters.
+Prefer 2–5 short sentences explaining the most useful corrections, like a tutor talking to a friend,
+not a textbook lecture. All actual edits can still appear in the visual comparison.
 These voices have different timbres. FFmpeg in an isolated imageio-ffmpeg package assembles
 feedback parts into one MP3; do not install packages into the main Hermes runtime.

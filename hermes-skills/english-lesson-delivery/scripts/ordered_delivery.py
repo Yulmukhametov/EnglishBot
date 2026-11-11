@@ -5,6 +5,7 @@ Uses an isolated environment, not Hermes's managed Python runtime.
 """
 import argparse
 import asyncio
+import difflib
 import fcntl
 import hashlib
 import html
@@ -22,24 +23,45 @@ class DeliveryError(Exception):
     pass
 
 
-_BOLD = re.compile(r"\*\*([^*\n]+)\*\*")
+_MARKUP = re.compile(r"\*\*([^*\n]+)\*\*|~~([^~\n]+)~~")
 _WORD = re.compile(r"[A-Za-zА-Яа-яЁё]+(?:['’][A-Za-zА-Яа-яЁё]+)*")
 
 
 def spoken_text(text):
     """Remove supported presentation markup without changing the spoken words."""
-    return _BOLD.sub(lambda match: match.group(1), text)
+    return _MARKUP.sub(lambda match: match.group(1) or match.group(2), text)
 
 
 def formatted_text(text):
-    """Allow only paired **bold**; all user/model HTML stays escaped."""
+    """Allow paired bold/strikethrough; all user/model HTML stays escaped."""
     parts, position = [], 0
-    for match in _BOLD.finditer(text):
+    for match in _MARKUP.finditer(text):
+        tag = "b" if match.group(1) is not None else "s"
+        content = match.group(1) if tag == "b" else match.group(2)
         parts.extend([html.escape(text[position:match.start()]),
-                      "<b>" + html.escape(match.group(1)) + "</b>"])
+                      f"<{tag}>" + html.escape(content) + f"</{tag}>"])
         position = match.end()
     parts.append(html.escape(text[position:]))
     return "".join(parts)
+
+
+def feedback_display(payload):
+    """Show word-level edits, then the complete correction, then the spoken explanation."""
+    if "original_en" not in payload:
+        return payload["feedback_ru"]
+    before, after = payload["original_en"].split(), payload["corrected_en"].split()
+    edits = []
+    for action, i, j, k, m in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
+        if action == "equal":
+            edits.extend(before[i:j])
+        else:
+            if action in {"replace", "delete"}:
+                edits.append("~~" + " ".join(before[i:j]) + "~~")
+            if action in {"replace", "insert"}:
+                edits.append("**" + " ".join(after[k:m]) + "**")
+    return ("**Твоя фраза с исправлениями:**\n" + " ".join(edits)
+            + "\n\n**Правильный вариант:**\n" + payload["corrected_en"]
+            + "\n\n**Разбор:**\n" + payload["feedback_ru"])
 
 
 def speech_segments(text):
@@ -62,14 +84,23 @@ def speech_segments(text):
 
 
 def validate(payload):
-    if not isinstance(payload, dict) or set(payload) != {"request_id", "feedback_ru", "reply_en"}:
-        raise DeliveryError("Input must contain request_id, feedback_ru, reply_en only")
+    required = {"request_id", "feedback_ru", "reply_en"}
+    optional = {"original_en", "corrected_en"}
+    if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - optional:
+        raise DeliveryError("Input needs request_id, feedback_ru, reply_en; original_en/corrected_en are optional")
+    if ("original_en" in payload) != ("corrected_en" in payload):
+        raise DeliveryError("original_en and corrected_en must be provided together")
     if not isinstance(payload["request_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", payload["request_id"]):
         raise DeliveryError("Invalid request_id")
     for key in ("feedback_ru", "reply_en"):
         value = payload[key]
         if not isinstance(value, str) or not value.strip() or len(value) > 2000:
             raise DeliveryError(f"{key} must contain 1–2000 characters")
+    for key in ("original_en", "corrected_en"):
+        if key in payload and (not isinstance(payload[key], str) or not payload[key].strip() or len(payload[key]) > 1200):
+            raise DeliveryError(f"{key} must contain 1–1200 characters")
+    if len(spoken_text(feedback_display(payload)).encode("utf-16-le")) // 2 > 4000:
+        raise DeliveryError("Formatted feedback too long; shorten the explanation")
     return payload
 
 
@@ -150,7 +181,6 @@ async def combine_speech(paths, destination):
     import imageio_ffmpeg
     # Re-encode to one MP3; byte-concatenating MP3 files can produce invalid durations/seeks.
     # Trusted, generated local names only (never model-provided file names).
-    pause = destination.with_name(destination.stem + "-pause.mp3")
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
 
     async def run(*arguments):
@@ -166,14 +196,18 @@ async def combine_speech(paths, destination):
         if code:
             raise DeliveryError("Audio assembly failed")
 
-    await run("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "0.20",
-              "-c:a", "libmp3lame", "-b:a", "64k", str(pause))
     playlist = destination.with_suffix(".concat")
     entries = []
+    # Trim only very quiet leading/trailing audio, keeping 40 ms of breathing room.
+    # Remove artificial gaps; preserve sentence pauses inside each synthesized part.
+    trim = ("silenceremove=start_periods=1:start_duration=0.02:start_threshold=-50dB:start_silence=0.04,"
+            "areverse,silenceremove=start_periods=1:start_duration=0.02:"
+            "start_threshold=-50dB:start_silence=0.04,areverse")
     for index, path in enumerate(paths):
-        if index:
-            entries.append("file '" + pause.name + "'")
-        entries.append("file '" + path.name + "'")
+        cleaned = destination.with_name(f"trimmed-{index:02d}.mp3")
+        await run("-i", str(path), "-af", trim, "-ar", "24000", "-ac", "1",
+                  "-c:a", "libmp3lame", "-b:a", "64k", str(cleaned))
+        entries.append("file '" + cleaned.name + "'")
     playlist.write_text("\n".join(entries) + "\n", encoding="utf-8")
     await run("-f", "concat", "-safe", "1", "-i", str(playlist), "-ar", "24000", "-ac", "1",
               "-c:a", "libmp3lame", "-b:a", "64k", str(destination))
@@ -181,13 +215,13 @@ async def combine_speech(paths, destination):
 
 async def synthesize(payload, directory):
     import edge_tts
-    voices = {"ru": "ru-RU-DmitryNeural", "en": "en-US-GuyNeural"}
+    voices = {"ru": "ru-RU-SvetlanaNeural", "en": "en-US-JennyNeural"}
     paths = [directory / "feedback.mp3", directory / "reply.mp3"]
     semaphore = asyncio.Semaphore(2)
 
     async def piece(text, voice, target):
         async with semaphore:
-            await edge_tts.Communicate(text, voice, rate="-5%").save(str(target))
+            await edge_tts.Communicate(text, voice, rate="+0%").save(str(target))
         if not target.is_file() or target.stat().st_size == 0:
             raise DeliveryError("Speech generation did not produce audio")
 
@@ -235,7 +269,7 @@ def deliver(payload, state_dir, sender, synthesizer=synthesize):
                 raise DeliveryError("Speech preparation failed; no Telegram messages sent") from None
             steps = [
                 lambda: sender.send_voice(paths[0]),
-                lambda: sender.send_text(payload["feedback_ru"]),
+                lambda: sender.send_text(feedback_display(payload)),
                 lambda: sender.send_voice(paths[1]),
                 lambda: sender.send_text(payload["reply_en"], hidden=True),
             ]
