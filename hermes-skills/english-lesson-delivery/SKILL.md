@@ -20,7 +20,7 @@ Supported inline markup: **bold** and ~~strikethrough~~; no HTML, tables, code f
 of English words. Write English words in Latin letters. Write short, natural spoken sentences
 with normal punctuation; prefer complete English examples over fragmented individual letters.
 The program strips formatting markers before speech, uses Russian speech for Cyrillic prose and
-English speech for Latin examples, and assembles one feedback voice note without artificial gaps. Very quiet edge silence is shortened.
+English speech for Latin examples, and assembles one feedback voice note with a short configurable gap at language switches (100 ms by default). Very quiet edge silence is shortened.
 The English continuation is always spoken by the English voice. Both text messages retain
 supported bold formatting; the whole second text is also under a spoiler.
 Preserve intended meaning and distinguish errors from optional style.
@@ -42,7 +42,8 @@ are not audio evidence. Diagnosis of level is provisional. Adapt to the user's g
    actual errors, not gratuitously rewrite style. For other conversation/homework, omit both fields.
    The program itself compares the words and adds the visible block:
    learner sentence with ~~deleted words~~ **inserted words**, followed by the complete corrected
-   sentence, then feedback_ru. Keep feedback concise so the full first text fits Telegram's 4000
+   sentence, then feedback_ru inside a Telegram blockquote. Only the explanation is quoted;
+   the comparison and corrected sentence stay outside the quote. Keep feedback concise so the full first text fits Telegram's 4000
    UTF-16-unit guard. This visual block is additional learning material, not read out in full:
    the first voice speaks feedback_ru only. Include the useful corrected English example there.
    Do not pass shell-interpolated prose. Write JSON using a file-writing tool or a quoted heredoc.
@@ -68,7 +69,11 @@ share one process lock. Other Hermes outputs/notifications can still arrive inde
 This skill is not a replacement for a complete learning database or validated pronunciation
 assessment. It addresses message ordering. Edge TTS is used without an OpenAI audio API key;
 its availability and voice quality must be tested on the target server. Two Edge voices are used:
-ru-RU-SvetlanaNeural for Russian, en-US-JennyNeural for English, at normal rate (+0%).
+ru-RU-SvetlanaNeural for Russian, en-US-JennyNeural for English, with default rate +8% and pitch +12 Hz. These controls can make speech brisker/higher,
+but do not guarantee a cheerful emotional style. Settings persist in HERMES_HOME/english-lesson-voice.json.
+The owner can tune them with:
+`<skill-directory>/send-lesson --configure-voice --rate 8 --pitch-hz 12 --pause-ms 100`
+Do not change these preferences on your own during lesson delivery.
 Write feedback like a friendly tutor speaking naturally: short sentences, no formal preamble,
 no dramatic narration, no excessive headings, and avoid switching languages for individual letters.
 Prefer 2–5 short sentences explaining the most useful corrections, like a tutor talking to a friend,

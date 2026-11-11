@@ -32,7 +32,7 @@ def spoken_text(text):
     return _MARKUP.sub(lambda match: match.group(1) or match.group(2), text)
 
 
-def formatted_text(text):
+def inline_text(text):
     """Allow paired bold/strikethrough; all user/model HTML stays escaped."""
     parts, position = [], 0
     for match in _MARKUP.finditer(text):
@@ -43,6 +43,45 @@ def formatted_text(text):
         position = match.end()
     parts.append(html.escape(text[position:]))
     return "".join(parts)
+
+
+def formatted_text(text):
+    """Render safe inline styles and contiguous > quote lines as Telegram blockquotes."""
+    output, quote = [], []
+
+    def flush_quote():
+        if quote:
+            output.append("<blockquote>" + "\n".join(quote) + "</blockquote>")
+            quote.clear()
+
+    for line in text.split("\n"):
+        if line.startswith("> ") or line == ">":
+            quote.append(inline_text(line[2:] if line.startswith("> ") else ""))
+        else:
+            flush_quote()
+            output.append(inline_text(line))
+    flush_quote()
+    return "\n".join(output)
+
+
+DEFAULT_SPEECH = {"rate_percent": 8, "pitch_hz": 12, "pause_ms": 100}
+
+
+def speech_settings(home, changes=None):
+    path = home / "english-lesson-voice.json"
+    settings = dict(DEFAULT_SPEECH)
+    if path.exists():
+        settings.update(json.loads(path.read_text(encoding="utf-8")))
+    if changes:
+        settings.update(changes)
+    for key, lower, upper in (("rate_percent", -20, 30), ("pitch_hz", -20, 40), ("pause_ms", 0, 400)):
+        value = settings.get(key)
+        if type(value) is not int or not lower <= value <= upper:
+            raise DeliveryError(f"{key} must be an integer between {lower} and {upper}")
+    if changes:
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        save_state(path, settings)
+    return settings
 
 
 def feedback_display(payload):
@@ -61,7 +100,7 @@ def feedback_display(payload):
                 edits.append("**" + " ".join(after[k:m]) + "**")
     return ("**Твоя фраза с исправлениями:**\n" + " ".join(edits)
             + "\n\n**Правильный вариант:**\n" + payload["corrected_en"]
-            + "\n\n**Разбор:**\n" + payload["feedback_ru"])
+            + "\n\n**Разбор:**\n" + "\n".join("> " + line for line in payload["feedback_ru"].split("\n")))
 
 
 def speech_segments(text):
@@ -177,7 +216,7 @@ def save_state(path, state):
     os.replace(temporary, path)
 
 
-async def combine_speech(paths, destination):
+async def combine_speech(paths, destination, pause_ms=100):
     import imageio_ffmpeg
     # Re-encode to one MP3; byte-concatenating MP3 files can produce invalid durations/seeks.
     # Trusted, generated local names only (never model-provided file names).
@@ -198,30 +237,38 @@ async def combine_speech(paths, destination):
 
     playlist = destination.with_suffix(".concat")
     entries = []
+    pause = destination.with_name("language-pause.wav")
+    if pause_ms:
+        await run("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", f"{pause_ms / 1000:.3f}",
+                  "-c:a", "pcm_s16le", str(pause))
     # Trim only very quiet leading/trailing audio, keeping 40 ms of breathing room.
-    # Remove artificial gaps; preserve sentence pauses inside each synthesized part.
+    # Preserve sentence pauses; add one short, controlled gap at language switches.
     trim = ("silenceremove=start_periods=1:start_duration=0.02:start_threshold=-50dB:start_silence=0.04,"
             "areverse,silenceremove=start_periods=1:start_duration=0.02:"
             "start_threshold=-50dB:start_silence=0.04,areverse")
     for index, path in enumerate(paths):
-        cleaned = destination.with_name(f"trimmed-{index:02d}.mp3")
+        cleaned = destination.with_name(f"trimmed-{index:02d}.wav")
         await run("-i", str(path), "-af", trim, "-ar", "24000", "-ac", "1",
-                  "-c:a", "libmp3lame", "-b:a", "64k", str(cleaned))
+                  "-c:a", "pcm_s16le", str(cleaned))
+        if index and pause_ms:
+            entries.append("file '" + pause.name + "'")
         entries.append("file '" + cleaned.name + "'")
     playlist.write_text("\n".join(entries) + "\n", encoding="utf-8")
     await run("-f", "concat", "-safe", "1", "-i", str(playlist), "-ar", "24000", "-ac", "1",
               "-c:a", "libmp3lame", "-b:a", "64k", str(destination))
 
 
-async def synthesize(payload, directory):
+async def synthesize(payload, directory, settings=None):
     import edge_tts
     voices = {"ru": "ru-RU-SvetlanaNeural", "en": "en-US-JennyNeural"}
+    settings = dict(DEFAULT_SPEECH) if settings is None else settings
     paths = [directory / "feedback.mp3", directory / "reply.mp3"]
     semaphore = asyncio.Semaphore(2)
 
     async def piece(text, voice, target):
         async with semaphore:
-            await edge_tts.Communicate(text, voice, rate="+0%").save(str(target))
+            await edge_tts.Communicate(text, voice, rate=f"{settings['rate_percent']:+d}%",
+                                       pitch=f"{settings['pitch_hz']:+d}Hz").save(str(target))
         if not target.is_file() or target.stat().st_size == 0:
             raise DeliveryError("Speech generation did not produce audio")
 
@@ -236,7 +283,7 @@ async def synthesize(payload, directory):
     if len(pieces) == 1:
         pieces[0].replace(paths[0])
     else:
-        await combine_speech(pieces, paths[0])
+        await combine_speech(pieces, paths[0], settings["pause_ms"])
     return paths
 
 
@@ -293,15 +340,34 @@ def deliver(payload, state_dir, sender, synthesizer=synthesize):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, type=Path)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--input", type=Path)
+    action.add_argument("--configure-voice", action="store_true")
+    parser.add_argument("--rate", type=int)
+    parser.add_argument("--pitch-hz", type=int)
+    parser.add_argument("--pause-ms", type=int)
     args = parser.parse_args()
     home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
     try:
+        if args.configure_voice:
+            changes = {key: value for key, value in {
+                "rate_percent": args.rate, "pitch_hz": args.pitch_hz, "pause_ms": args.pause_ms,
+            }.items() if value is not None}
+            settings = speech_settings(home, changes)
+            print(json.dumps({"success": True, "speech_settings": settings}))
+            return
+        if any(value is not None for value in (args.rate, args.pitch_hz, args.pause_ms)):
+            raise DeliveryError("Voice options require --configure-voice")
         if args.input.stat().st_size > 30000:
             raise DeliveryError("Input file too large")
         payload = validate(json.loads(args.input.read_text(encoding="utf-8")))
         token, chat_id = credentials(home)
-        state = deliver(payload, home / "english-lesson-delivery-state", Telegram(token, chat_id))
+        settings = speech_settings(home)
+
+        async def configured_synthesis(lesson, directory):
+            return await synthesize(lesson, directory, settings)
+
+        state = deliver(payload, home / "english-lesson-delivery-state", Telegram(token, chat_id), configured_synthesis)
         print(json.dumps({"success": True, "message_ids": state["message_ids"]}))
     except DeliveryError as error:
         print(json.dumps({"success": False, "error": str(error)}))

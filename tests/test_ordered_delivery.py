@@ -191,8 +191,8 @@ async def test_synthesis_routes_languages_and_creates_valid_audio(tmp_path, monk
     calls = []
 
     class Communicate:
-        def __init__(self, text, voice, rate):
-            calls.append((text, voice, rate))
+        def __init__(self, text, voice, rate, pitch):
+            calls.append((text, voice, rate, pitch))
 
         async def save(self, path):
             Path(path).write_bytes(audio_bytes)
@@ -201,17 +201,17 @@ async def test_synthesis_routes_languages_and_creates_valid_audio(tmp_path, monk
     paths = await delivery.synthesize(dict(feedback_ru='Вместо **go** скажи **went**.',
                                            reply_en='**What happened?**'), tmp_path)
     assert calls == [
-        ('Вместо', 'ru-RU-SvetlanaNeural', '+0%'),
-        ('go', 'en-US-JennyNeural', '+0%'),
-        ('скажи', 'ru-RU-SvetlanaNeural', '+0%'),
-        ('went.', 'en-US-JennyNeural', '+0%'),
-        ('What happened?', 'en-US-JennyNeural', '+0%')]
+        ('Вместо', 'ru-RU-SvetlanaNeural', '+8%', '+12Hz'),
+        ('go', 'en-US-JennyNeural', '+8%', '+12Hz'),
+        ('скажи', 'ru-RU-SvetlanaNeural', '+8%', '+12Hz'),
+        ('went.', 'en-US-JennyNeural', '+8%', '+12Hz'),
+        ('What happened?', 'en-US-JennyNeural', '+8%', '+12Hz')]
     assert all(path.stat().st_size > 0 for path in paths)
     decoded = subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-i', str(paths[0]),
                               '-f', 's16le', '-ac', '1', '-ar', '24000', '-'],
                              check=True, capture_output=True).stdout
-    # Four 160 ms tones: original edge silence is trimmed and no gaps are added.
-    assert 0.60 <= len(decoded) / (24000 * 2) <= 1.5
+    # Four 160 ms tones plus three 100 ms language gaps, allowing retained edge padding.
+    assert 0.90 <= len(decoded) / (24000 * 2) <= 1.8
 
 
 def test_inline_corrections_and_complete_sentence(tmp_path, payload):
@@ -249,3 +249,23 @@ def test_missing_sentence_pair_and_oversized_feedback_rejected(payload):
         delivery.validate(dict(payload, original_en='I go.'))
     with pytest.raises(delivery.DeliveryError, match='too long'):
         delivery.validate(dict(payload, feedback_ru='😀' * 2000, original_en='I go.', corrected_en='I went.'))
+
+
+def test_quote_explanation_only_and_escape_html(payload):
+    payload.update(original_en='I go yesterday.', corrected_en='I went yesterday.',
+                   feedback_ru='**went** — прошедшее время.\nНе тег: <script>.')
+    rendered = delivery.formatted_text(delivery.feedback_display(payload))
+    assert '<s>go</s> <b>went</b>' in rendered
+    assert '<blockquote><b>went</b> — прошедшее время.\nНе тег: &lt;script&gt;.</blockquote>' in rendered
+    assert rendered.index('I went yesterday.') < rendered.index('<blockquote>')
+    assert '<blockquote><blockquote>' not in delivery.formatted_text('> > nested')
+
+
+def test_voice_settings_persist_and_reject_bad_values(tmp_path):
+    assert delivery.speech_settings(tmp_path) == dict(rate_percent=8, pitch_hz=12, pause_ms=100)
+    delivery.speech_settings(tmp_path, dict(pause_ms=80, rate_percent=10))
+    assert delivery.speech_settings(tmp_path) == dict(rate_percent=10, pitch_hz=12, pause_ms=80)
+    for change in [dict(pause_ms=-1), dict(pause_ms=401), dict(rate_percent=100), dict(pitch_hz='bad')]:
+        with pytest.raises(delivery.DeliveryError, match='must be an integer'):
+            delivery.speech_settings(tmp_path, change)
+    assert delivery.speech_settings(tmp_path)['pause_ms'] == 80
