@@ -15,7 +15,8 @@ if [[ ! -x "$launcher" ]]; then
 fi
 # A separate tool environment; do not mutate the core Hermes runtime.
 python_path=$("$launcher" pm environment english-lesson-delivery \
-  --requirement 'edge-tts>=7.2,<8' --requirement 'python-dotenv>=1,<2')
+  --requirement 'edge-tts>=7.2,<8' --requirement 'python-dotenv>=1,<2' \
+  --requirement 'imageio-ffmpeg>=0.6,<1')
 if [[ "$python_path" != /* || ! -x "$python_path" ]]; then
   echo 'PM did not return an executable interpreter path.' >&2
   exit 1
@@ -33,5 +34,5 @@ interpreter=$(cat -- "$skill_dir/python-path")
 exec "$interpreter" "$skill_dir/scripts/ordered_delivery.py" "$@"
 WRAPPER
 chmod 700 "$target/send-lesson"
-"$python_path" -c 'import edge_tts, dotenv; print("Delivery dependencies OK")'
+"$python_path" -c 'import edge_tts, dotenv, imageio_ffmpeg; print("Delivery dependencies OK")'
 echo 'Installed skill: english-lesson-delivery. Restart the Hermes gateway, then test the skill in Telegram.'

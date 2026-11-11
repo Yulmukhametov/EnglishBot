@@ -22,6 +22,45 @@ class DeliveryError(Exception):
     pass
 
 
+_BOLD = re.compile(r"\*\*([^*\n]+)\*\*")
+_WORD = re.compile(r"[A-Za-zА-Яа-яЁё]+(?:['’][A-Za-zА-Яа-яЁё]+)*")
+
+
+def spoken_text(text):
+    """Remove supported presentation markup without changing the spoken words."""
+    return _BOLD.sub(lambda match: match.group(1), text)
+
+
+def formatted_text(text):
+    """Allow only paired **bold**; all user/model HTML stays escaped."""
+    parts, position = [], 0
+    for match in _BOLD.finditer(text):
+        parts.extend([html.escape(text[position:match.start()]),
+                      "<b>" + html.escape(match.group(1)) + "</b>"])
+        position = match.end()
+    parts.append(html.escape(text[position:]))
+    return "".join(parts)
+
+
+def speech_segments(text):
+    """Route Cyrillic prose to Russian and Latin examples to English voices."""
+    text = spoken_text(text)
+    words = list(_WORD.finditer(text))
+    if not words:
+        raise DeliveryError("Speech text must contain Russian or English words")
+    segments, start, language = [], 0, None
+    for word in words:
+        next_language = "en" if word.group()[0].isascii() else "ru"
+        if language is not None and next_language != language:
+            segments.append((language, text[start:word.start()].strip()))
+            start = word.start()
+        language = next_language
+    segments.append((language, text[start:].strip()))
+    if len(segments) > 32:
+        raise DeliveryError("Too many language switches; use shorter complete examples")
+    return segments
+
+
 def validate(payload):
     if not isinstance(payload, dict) or set(payload) != {"request_id", "feedback_ru", "reply_en"}:
         raise DeliveryError("Input must contain request_id, feedback_ru, reply_en only")
@@ -92,7 +131,7 @@ class Telegram:
         return self.request("sendVoice", {}, audio_path)
 
     def send_text(self, text, hidden=False):
-        value = html.escape(text)
+        value = formatted_text(text)
         if hidden:
             value = '<span class="tg-spoiler">' + value + '</span>'
         return self.request("sendMessage", {"text": value, "parse_mode": "HTML"})
@@ -107,18 +146,63 @@ def save_state(path, state):
     os.replace(temporary, path)
 
 
+async def combine_speech(paths, destination):
+    import imageio_ffmpeg
+    # Re-encode to one MP3; byte-concatenating MP3 files can produce invalid durations/seeks.
+    # Trusted, generated local names only (never model-provided file names).
+    pause = destination.with_name(destination.stem + "-pause.mp3")
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+
+    async def run(*arguments):
+        process = await asyncio.create_subprocess_exec(
+            ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *arguments,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            code = await asyncio.wait_for(process.wait(), timeout=60)
+        except (TimeoutError, asyncio.CancelledError):
+            process.kill()
+            await process.wait()
+            raise
+        if code:
+            raise DeliveryError("Audio assembly failed")
+
+    await run("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", "0.20",
+              "-c:a", "libmp3lame", "-b:a", "64k", str(pause))
+    playlist = destination.with_suffix(".concat")
+    entries = []
+    for index, path in enumerate(paths):
+        if index:
+            entries.append("file '" + pause.name + "'")
+        entries.append("file '" + path.name + "'")
+    playlist.write_text("\n".join(entries) + "\n", encoding="utf-8")
+    await run("-f", "concat", "-safe", "1", "-i", str(playlist), "-ar", "24000", "-ac", "1",
+              "-c:a", "libmp3lame", "-b:a", "64k", str(destination))
+
+
 async def synthesize(payload, directory):
     import edge_tts
-    voice = "en-US-AndrewMultilingualNeural"
+    voices = {"ru": "ru-RU-DmitryNeural", "en": "en-US-GuyNeural"}
     paths = [directory / "feedback.mp3", directory / "reply.mp3"]
-    # Generate both first. No Telegram messages are sent if synthesis fails.
-    await asyncio.gather(
-        edge_tts.Communicate(payload["feedback_ru"], voice).save(str(paths[0])),
-        edge_tts.Communicate(payload["reply_en"], voice).save(str(paths[1])),
-    )
-    for path in paths:
-        if not path.is_file() or path.stat().st_size == 0:
+    semaphore = asyncio.Semaphore(2)
+
+    async def piece(text, voice, target):
+        async with semaphore:
+            await edge_tts.Communicate(text, voice, rate="-5%").save(str(target))
+        if not target.is_file() or target.stat().st_size == 0:
             raise DeliveryError("Speech generation did not produce audio")
+
+    segments = speech_segments(payload["feedback_ru"])
+    pieces = [directory / f"feedback-part-{i:02d}.mp3" for i in range(len(segments))]
+    # Both audio files must finish before any Telegram delivery starts.
+    await asyncio.gather(
+        *(piece(text, voices[language], path)
+          for (language, text), path in zip(segments, pieces)),
+        piece(spoken_text(payload["reply_en"]), voices["en"], paths[1]),
+    )
+    if len(pieces) == 1:
+        pieces[0].replace(paths[0])
+    else:
+        await combine_speech(pieces, paths[0])
     return paths
 
 

@@ -114,8 +114,11 @@ def test_telegram_text_escapes_html_and_hides_only_english(monkeypatch):
     sender = delivery.Telegram('123:secret', 42)
     assert sender.send_text('a < b & c', hidden=True) == 8
     assert '<span class="tg-spoiler">a &lt; b &amp; c</span>' in requests[0]
-    sender.send_text('Visible')
+    sender.send_text('**Visible**')
     assert 'tg-spoiler' not in requests[1]
+    assert '<b>Visible</b>' in requests[1]
+    sender.send_text('**went**', hidden=True)
+    assert '<span class="tg-spoiler"><b>went</b></span>' in requests[2]
 
 
 def test_invalid_ack_is_not_treated_as_delivery(monkeypatch):
@@ -147,3 +150,64 @@ def test_credentials_read_quoted_single_owner_without_exposing_token(tmp_path, m
         monkeypatch.delenv(key, raising=False)
     (tmp_path / '.env').write_text('TELEGRAM_BOT_TOKEN="123:secret"\nTELEGRAM_ALLOWED_USERS="42"\n')
     assert delivery.credentials(tmp_path) == ('123:secret', 42)
+
+
+def test_bold_is_rendered_safely_and_not_read_aloud():
+    text = 'Вместо **go** скажи **went**. <не тег> & **верно**'
+    assert delivery.formatted_text(text) == 'Вместо <b>go</b> скажи <b>went</b>. &lt;не тег&gt; &amp; <b>верно</b>'
+    assert delivery.spoken_text(text) == 'Вместо go скажи went. <не тег> & верно'
+    assert delivery.formatted_text('**<script>**') == '<b>&lt;script&gt;</b>'
+    assert delivery.formatted_text('Unclosed **bold') == 'Unclosed **bold'
+
+
+def test_whole_english_phrases_use_english_voice():
+    text = '**Ошибка:** Yesterday I go. **Правильно:** Yesterday I went. Объяснение: прошедшее время.'
+    assert delivery.speech_segments(text) == [
+        ('ru', 'Ошибка:'), ('en', 'Yesterday I go.'), ('ru', 'Правильно:'),
+        ('en', 'Yesterday I went.'), ('ru', 'Объяснение: прошедшее время.')]
+    assert delivery.speech_segments("Ты сказал I didn't go, это правильно.") == [
+        ('ru', 'Ты сказал'), ('en', "I didn't go,"), ('ru', 'это правильно.')]
+
+
+def test_pathological_switching_is_rejected():
+    with pytest.raises(delivery.DeliveryError, match='Too many language'):
+        delivery.speech_segments('да yes ' * 20)
+
+
+async def test_synthesis_routes_languages_and_creates_valid_audio(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        pytest.skip('FFmpeg is required for audio assembly integration test')
+    fixture = tmp_path / 'source.mp3'
+    subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i',
+                    'anullsrc=r=24000:cl=mono', '-t', '0.12', '-c:a', 'libmp3lame', str(fixture)],
+                   check=True)
+    audio_bytes = fixture.read_bytes()
+    calls = []
+
+    class Communicate:
+        def __init__(self, text, voice, rate):
+            calls.append((text, voice, rate))
+
+        async def save(self, path):
+            Path(path).write_bytes(audio_bytes)
+    monkeypatch.setitem(sys.modules, 'edge_tts', SimpleNamespace(Communicate=Communicate))
+    monkeypatch.setitem(sys.modules, 'imageio_ffmpeg', SimpleNamespace(get_ffmpeg_exe=lambda: ffmpeg))
+    paths = await delivery.synthesize(dict(feedback_ru='Вместо **go** скажи **went**.',
+                                           reply_en='**What happened?**'), tmp_path)
+    assert calls == [
+        ('Вместо', 'ru-RU-DmitryNeural', '-5%'),
+        ('go', 'en-US-GuyNeural', '-5%'),
+        ('скажи', 'ru-RU-DmitryNeural', '-5%'),
+        ('went.', 'en-US-GuyNeural', '-5%'),
+        ('What happened?', 'en-US-GuyNeural', '-5%')]
+    assert all(path.stat().st_size > 0 for path in paths)
+    decoded = subprocess.run([ffmpeg, '-hide_banner', '-loglevel', 'error', '-i', str(paths[0]),
+                              '-f', 's16le', '-ac', '1', '-ar', '24000', '-'],
+                             check=True, capture_output=True).stdout
+    # Four 120 ms parts plus three 200 ms pauses, allowing codec padding.
+    assert len(decoded) / (24000 * 2) >= 1.0

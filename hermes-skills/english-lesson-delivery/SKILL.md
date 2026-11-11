@@ -14,7 +14,16 @@ profiles are deliberately refused. Never read or print tokens or the contents of
 
 Act as a patient English teacher. Compose feedback_ru (Russian explanation with corrected English
 examples) and reply_en (natural English continuation and one suitable question), max 2000
-characters per field. Preserve intended meaning and distinguish errors from optional style.
+characters per field. Use **bold** sparingly to highlight an incorrect word and its
+correct replacement, and short labels such as **Ошибка:** / **Правильно:** / **Почему:**.
+Only **bold** is supported; no HTML, tables, code fences, IPA or Cyrillic phonetic spelling
+of English words. Write English words in Latin letters. Write short, natural spoken sentences
+with normal punctuation; prefer complete English examples over fragmented individual letters.
+The program strips bold markers before speech, uses Russian speech for Cyrillic prose and
+English speech for Latin examples, and assembles one feedback voice note with short pauses.
+The English continuation is always spoken by the English voice. Both text messages retain
+supported bold formatting; the whole second text is also under a spoiler.
+Preserve intended meaning and distinguish errors from optional style.
 Do not invent grammar mistakes. Do not infer pronunciation from text: incoming voice transcripts
 are not audio evidence. Diagnosis of level is provisional. Adapt to the user's goals and style.
 
@@ -47,4 +56,7 @@ share one process lock. Other Hermes outputs/notifications can still arrive inde
 
 This skill is not a replacement for a complete learning database or validated pronunciation
 assessment. It addresses message ordering. Edge TTS is used without an OpenAI audio API key;
-its availability and voice quality must be tested on the target server.
+its availability and voice quality must be tested on the target server. Two Edge voices are used:
+ru-RU-DmitryNeural for Russian, en-US-GuyNeural for English, at -5% rate.
+These voices have different timbres. FFmpeg in an isolated imageio-ffmpeg package assembles
+feedback parts into one MP3; do not install packages into the main Hermes runtime.
