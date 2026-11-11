@@ -312,3 +312,62 @@ async def test_gap_speech_uses_real_pause_not_spoken_placeholder(tmp_path, monke
                      'to work by bus. Your options are: go, goes, going. Which word fits?']
     assert joins == [('reply.mp3', 600)]
     assert all('blank' not in part and '_____' not in part for part in calls)
+
+
+def test_russian_clarification_is_one_visible_text_and_never_calls_speech(tmp_path):
+    async def forbidden(*args):
+        pytest.fail('Speech must not run for a Russian text clarification')
+    payload = dict(request_id='clarify-1', mode='text_ru', text_ru='Расскажи, что ты делал вчера. Можно начать с одного предложения.')
+    sender = Sender()
+    state = delivery.deliver(payload, tmp_path, sender, forbidden)
+    assert sender.events == [('text', payload['text_ru'], False)]
+    assert state['message_ids'] == [101] and state['status'] == 'complete'
+    delivery.deliver(payload, tmp_path, sender, forbidden)
+    assert len(sender.events) == 1
+
+
+def test_english_only_task_has_two_messages(tmp_path):
+    payload = dict(request_id='task-1', mode='english_only', reply_en='What did you do yesterday?')
+    sender = Sender()
+    state = delivery.deliver(payload, tmp_path, sender, synth)
+    assert sender.events == [('voice', 'reply.mp3'), ('text', payload['reply_en'], True)]
+    assert state['status'] == 'complete'
+
+
+async def test_english_only_synthesizes_no_russian_intro(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    calls = []
+
+    class Communicate:
+        def __init__(self, text, voice, **kwargs):
+            calls.append((text, voice))
+
+        async def save(self, path):
+            Path(path).write_bytes(b'audio')
+    monkeypatch.setitem(sys.modules, 'edge_tts', SimpleNamespace(Communicate=Communicate))
+    payload = dict(request_id='task-2', mode='english_only', reply_en='Tell me about yesterday.')
+    await delivery.synthesize(payload, tmp_path)
+    assert calls == [('Tell me about yesterday.', 'en-US-JennyNeural')]
+    assert not (tmp_path / 'feedback.mp3').exists()
+
+
+@pytest.mark.parametrize('payload', [
+    dict(request_id='x', mode='text_ru', text_ru='Hi', reply_en='Extra'),
+    dict(request_id='x', mode='english_only', reply_en='Hi', feedback_ru='Extra'),
+    dict(request_id='x', mode='text_ru', text_ru=''),
+    dict(request_id='x', mode='invalid'),
+])
+def test_response_modes_reject_mixed_or_invalid_fields(payload):
+    with pytest.raises(delivery.DeliveryError):
+        delivery.validate(payload)
+
+
+def test_text_only_failure_is_journaled_and_not_retried(tmp_path):
+    payload = dict(request_id='clarify-error', mode='text_ru', text_ru='Уточнение.')
+    sender = Sender(failure=1)
+    with pytest.raises(delivery.DeliveryError, match='Stopped at step 1'):
+        delivery.deliver(payload, tmp_path, sender)
+    with pytest.raises(delivery.DeliveryError, match='incomplete'):
+        delivery.deliver(payload, tmp_path, sender)
+    assert len(sender.events) == 1

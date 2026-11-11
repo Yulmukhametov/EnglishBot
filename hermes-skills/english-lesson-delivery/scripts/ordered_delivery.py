@@ -132,22 +132,42 @@ def speech_segments(text):
 
 
 def validate(payload):
-    required = {"request_id", "feedback_ru", "reply_en"}
-    optional = {"original_en", "corrected_en", "gap_exercise"}
-    if not isinstance(payload, dict) or not required <= set(payload) or set(payload) - required - optional:
-        raise DeliveryError("Input needs request_id, feedback_ru, reply_en; original_en/corrected_en/gap_exercise are optional")
+    if not isinstance(payload, dict):
+        raise DeliveryError("Input must be an object")
+    mode = payload.get("mode", "lesson")
+    if mode not in {"lesson", "english_only", "text_ru"}:
+        raise DeliveryError("Unknown response mode")
+    request_id = payload.get("request_id")
+    if not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_id):
+        raise DeliveryError("Invalid request_id")
+    if mode == "text_ru":
+        if set(payload) != {"request_id", "mode", "text_ru"}:
+            raise DeliveryError("text_ru mode needs only request_id, mode and text_ru")
+        value = payload["text_ru"]
+        if not isinstance(value, str) or not value.strip() or len(value.encode("utf-16-le")) // 2 > 4000:
+            raise DeliveryError("Russian clarification must contain 1–4000 UTF-16 units")
+        return payload
+    required = {"request_id", "reply_en"}
+    optional = {"mode", "gap_exercise"}
+    if mode == "lesson":
+        required.add("feedback_ru")
+        optional.update({"original_en", "corrected_en"})
+    if not required <= set(payload) or set(payload) - required - optional:
+        raise DeliveryError("Missing or unknown fields for response mode")
     if ("original_en" in payload) != ("corrected_en" in payload):
         raise DeliveryError("original_en and corrected_en must be provided together")
     if not isinstance(payload["request_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", payload["request_id"]):
         raise DeliveryError("Invalid request_id")
     for key in ("feedback_ru", "reply_en"):
+        if key not in payload:
+            continue
         value = payload[key]
         if not isinstance(value, str) or not value.strip() or len(value) > 2000:
             raise DeliveryError(f"{key} must contain 1–2000 characters")
     for key in ("original_en", "corrected_en"):
         if key in payload and (not isinstance(payload[key], str) or not payload[key].strip() or len(payload[key]) > 1200):
             raise DeliveryError(f"{key} must contain 1–1200 characters")
-    if len(spoken_text(feedback_display(payload)).encode("utf-16-le")) // 2 > 4000:
+    if mode == "lesson" and len(spoken_text(feedback_display(payload)).encode("utf-16-le")) // 2 > 4000:
         raise DeliveryError("Formatted feedback too long; shorten the explanation")
     if "gap_exercise" in payload:
         exercise = payload["gap_exercise"]
@@ -293,7 +313,7 @@ async def synthesize(payload, directory, settings=None):
         if not target.is_file() or target.stat().st_size == 0:
             raise DeliveryError("Speech generation did not produce audio")
 
-    segments = speech_segments(payload["feedback_ru"])
+    segments = speech_segments(payload["feedback_ru"]) if payload.get("mode", "lesson") == "lesson" else []
     pieces = [directory / f"feedback-part-{i:02d}.mp3" for i in range(len(segments))]
     exercise = payload.get("gap_exercise")
     if exercise:
@@ -315,7 +335,7 @@ async def synthesize(payload, directory, settings=None):
     )
     if len(pieces) == 1:
         pieces[0].replace(paths[0])
-    else:
+    elif pieces:
         await combine_speech(pieces, paths[0], settings["pause_ms"])
     if reply_parts:
         # This is a pedagogical gap, distinct from the short language-switch pause.
@@ -344,18 +364,27 @@ def deliver(payload, state_dir, sender, synthesizer=synthesize):
         state = {"request_id": payload["request_id"], "digest": digest, "status": "preparing", "message_ids": []}
         save_state(path, state)
         with tempfile.TemporaryDirectory(prefix="english-lesson-") as temp:
-            try:
-                paths = asyncio.run(synthesizer(payload, Path(temp)))
-            except Exception:
-                state["status"] = "preparation_failed"
-                save_state(path, state)
-                raise DeliveryError("Speech preparation failed; no Telegram messages sent") from None
-            steps = [
-                lambda: sender.send_voice(paths[0]),
-                lambda: sender.send_text(feedback_display(payload)),
-                lambda: sender.send_voice(paths[1]),
-                lambda: sender.send_text(reply_display(payload), hidden=True),
-            ]
+            mode = payload.get("mode", "lesson")
+            if mode == "text_ru":
+                # No speech engine, settings or audio files are needed for a clarification.
+                steps = [lambda: sender.send_text(payload["text_ru"])]
+            else:
+                try:
+                    paths = asyncio.run(synthesizer(payload, Path(temp)))
+                except Exception:
+                    state["status"] = "preparation_failed"
+                    save_state(path, state)
+                    raise DeliveryError("Speech preparation failed; no Telegram messages sent") from None
+                steps = []
+                if mode == "lesson":
+                    steps.extend([
+                        lambda: sender.send_voice(paths[0]),
+                        lambda: sender.send_text(feedback_display(payload)),
+                    ])
+                steps.extend([
+                    lambda: sender.send_voice(paths[1]),
+                    lambda: sender.send_text(reply_display(payload), hidden=True),
+                ])
             for index, step in enumerate(steps, 1):
                 state.update(status="awaiting_ack", step=index)
                 save_state(path, state)  # A crash after sending cannot cause a blind retry.
@@ -368,7 +397,7 @@ def deliver(payload, state_dir, sender, synthesizer=synthesize):
                     save_state(path, state)
                     raise DeliveryError(f"Stopped at step {index}; confirmed message_ids: {state['message_ids']}. Do not retry automatically") from None
                 state["message_ids"].append(message_id)
-                state["status"] = "complete" if index == 4 else "acknowledged"
+                state["status"] = "complete" if index == len(steps) else "acknowledged"
                 save_state(path, state)
         return state
 
@@ -398,10 +427,8 @@ def main():
             raise DeliveryError("Input file too large")
         payload = validate(json.loads(args.input.read_text(encoding="utf-8")))
         token, chat_id = credentials(home)
-        settings = speech_settings(home)
-
         async def configured_synthesis(lesson, directory):
-            return await synthesize(lesson, directory, settings)
+            return await synthesize(lesson, directory, speech_settings(home))
 
         state = deliver(payload, home / "english-lesson-delivery-state", Telegram(token, chat_id), configured_synthesis)
         print(json.dumps({"success": True, "message_ids": state["message_ids"]}))

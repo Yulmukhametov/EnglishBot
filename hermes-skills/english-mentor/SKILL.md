@@ -24,6 +24,16 @@ Hermes general memory or chat history is not a replacement for it. State include
 recent-answer window plus aggregate error counts and saved assessment/plan. Use the returned
 `next` field directly when available; a redundant `next-task` call is not required.
 
+## Clarification is not an answer
+
+Classify intent before recording learner performance. Questions such as "не понял задание",
+"объясни по-русски", "что значит это слово?" and requests to adjust voice/format are not
+answers to the pending diagnostic exercise. Use english-lesson-delivery mode=text_ru to send
+one visible Russian text; do not call learner record, mark the task declined, or advance it.
+Explain the current instruction and expected response format, not the correct answer.
+If the learner asks about the grammar rule instead, explain it briefly in Russian without
+attaching a new task. Do not repeat all four lesson messages for follow-up clarifications.
+
 ## Onboarding
 
 `learner next-task` returns the current question. Ask for goals and daily time before diagnosis.
@@ -75,21 +85,27 @@ with a harder task if the learner struggles: explain they can decline and record
 
 For correction feedback: preserve original mistakes, explain the topic and add one extra
 example, then use english-lesson-delivery's ordered mechanism. In a diagnostic turn, the second
-English voice can carry the NEXT question after the current answer has been saved; the feedback
-for diagnostic instructions can be one short sentence rather than the usual long correction.
+English voice can carry the NEXT question after the current answer has been saved. The Russian
+feedback must contain ONLY the analysis of the answer just received, never instructions or
+questions for the next task. Do not translate the next task into that feedback.
+If no correction is useful, send the next task using english_only (two messages). If the learner
+needs Russian instructions, wait for their request and answer once using text_ru.
 Do not give the answer before the learner attempts a task. When a task ends up already answered
 in chat during explanation, don't treat a later repetition as independent evidence.
 
 For choice tasks, copy the returned gap_exercise object into the english-lesson-delivery
 payload. Never replace the literal _____ placeholder with "blank", a translation of it,
 or the correct answer in the text. The delivery program renders the sentence and choices
-itself and creates a real 600 ms gap in the English audio. Explain in the first Russian
-voice that the pause marks the missing word (you may name its location, e.g. after "usually").
+itself and creates a real 600 ms gap in the English audio. If the learner requests clarification,
+explain in one Russian text that the pause/_____ marks the missing word (you may name its location).
+Do not add these new-task instructions to the preceding error analysis.
 Do not reveal the correct option. Existing task IDs and progress remain unchanged.
 
 For `listening_short`, the storage tool returns a passage and a question. Put passage + question
-ONLY in the second English voice (and its automatic spoiler transcript). The first Russian
-voice/text merely explains how to answer without opening the spoiler; no answer or translation.
+ONLY in the English voice (and its automatic spoiler transcript), using english_only when
+there is no preceding answer to analyze. Do not put task instructions in error feedback.
+If requested, explain the procedure in one text_ru message, without translating the passage
+or giving the answer. Clarifying instructions alone is not a new diagnostic answer.
 Ask whether the learner opened the transcript, and obtain an explicit answer. You cannot detect
 whether a spoiler was opened. Keep the comprehension answer pending until that self-report arrives.
 Record used_transcript=true when they did; this is assisted reading and is not independent

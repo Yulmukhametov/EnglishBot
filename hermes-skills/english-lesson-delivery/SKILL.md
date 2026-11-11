@@ -1,6 +1,6 @@
 ---
 name: english-lesson-delivery
-description: Send an English lesson to the single authorized Telegram owner as two separate voice messages, each followed by text, with the English text hidden under a spoiler. Use when the user requests this lesson response format.
+description: Deliver English tutor responses to the authorized Telegram owner: four ordered messages for corrections, English voice plus hidden text for conversation, or one visible Russian text for clarification.
 ---
 
 # Ordered English lesson delivery
@@ -16,9 +16,33 @@ For English lessons and diagnostics, also load the companion skill `english-ment
 `learner state` tool before planning the response. Save actual answers through that skill's CLI.
 During diagnostic questions, don't reveal an answer in the feedback before the learner attempts it.
 
+## Choose the response mode FIRST
+
+Do not send four messages automatically on every turn. Choose according to the user's intent:
+- `lesson` (default): an actual answer needing correction/explanation. feedback_ru contains ONLY
+  analysis of that answer: errors, rule, corrected examples. Never add next-task instructions,
+  a transition like "Теперь расскажи...", homework instructions or a new question there.
+  The next task/question belongs ONLY in reply_en or gap_exercise (the English voice + hidden text).
+- `english_only`: ordinary English conversation or a new task with no useful correction to give.
+  Send one English voice followed by its hidden text. Do not invent a Russian intro to fill slots.
+- `text_ru`: the learner asks "не понял задание", "объясни по-русски", "переведи задание",
+  asks about a rule/word, settings, progress, or supplies onboarding preferences. Send ONE visible
+  Russian text message. No voice generation, no hidden duplicate, no new English question.
+  Unless the user explicitly requests more, explain only the current instruction/topic. Do not
+  solve the exercise for them, assign the next task, or advance the diagnostic stage.
+
+For text_ru, use this input shape (other lesson fields are forbidden):
+{"request_id":"unique-clarification-id","mode":"text_ru","text_ru":"Расскажи, что ты делал вчера, в 3–5 предложениях. Если сложно, начни с одного."}
+For english_only:
+{"request_id":"unique-task-id","mode":"english_only","reply_en":"Tell me what you did yesterday."}
+It can also take gap_exercise. Lesson keeps the existing input shape, optionally mode="lesson".
+All modes use the same send-lesson executable, acknowledgements, lock and retry protection.
+After success don't add another ordinary assistant message or MEDIA output. The requested
+single-text clarification must remain a single message in the chat.
+
 ## Lesson preparation
 
-Act as a patient English teacher. Compose feedback_ru (Russian explanation with corrected English
+Act as a patient English teacher. In lesson mode compose feedback_ru (Russian explanation with corrected English
 examples) and reply_en (natural English continuation and one suitable question), max 2000
 characters per field. Use **bold** sparingly to highlight an incorrect word and its
 correct replacement, and short labels such as **Ошибка:** / **Правильно:** / **Почему:**.
@@ -65,8 +89,8 @@ The second English voice still continues the real conversation with one suitable
 
 ## Delivery
 
-1. For a user explicitly requesting this voice lesson format, create a UTF-8 JSON file in a
-   private temporary directory. Use a stable request_id for this ONE lesson (incoming Telegram
+1. For the selected response mode, create a UTF-8 JSON file in a private temporary directory.
+   For lesson mode use the shape below; for other modes use the shapes in Choose the response mode. Use a stable request_id for this ONE lesson (incoming Telegram
    message ID where available; otherwise generate a UUID once and keep it for this attempt).
    Shape:
    {"request_id":"unique-lesson-id","feedback_ru":"...","reply_en":"...",
@@ -95,10 +119,11 @@ The second English voice still continues the real conversation with one suitable
 2. Run the executable `send-lesson` inside THIS skill directory:
    `<skill-directory>/send-lesson --input /absolute/path/to/lesson.json`
    Resolve the skill directory from this skill's actual location. Allow up to 180 seconds.
-3. Read its JSON result. Success means exactly four Telegram acknowledgements have been recorded:
-   voice feedback -> visible feedback text -> English voice -> English text under spoiler.
+3. Read its JSON result. Success means all acknowledgements for the selected mode were recorded:
+   lesson: four (voice feedback -> visible feedback text -> English voice -> hidden English text);
+   english_only: two (English voice -> hidden English text); text_ru: one visible Russian text.
 4. On success, do not repeat any text, MEDIA tags or audio in the assistant's final response.
-   If the platform requires a final response, keep it to a short delivery confirmation.
+   The tool already delivered the response. End this turn without an additional user-facing confirmation.
 5. On error/timeout stop. Never call the same lesson with a new request_id automatically.
    A message may have been sent even if the acknowledgement was lost. Tell the user the
    confirmed count from the result/state if available; do not claim full delivery.
@@ -106,7 +131,8 @@ The second English voice still continues the real conversation with one suitable
    attempts require inspection and explicit human instructions.
 6. Delete only the temporary input file/directory you created. Keep the delivery state journal.
 
-The program prepares BOTH voice files before sending anything. Each Telegram call waits for a
+In lesson mode, the program prepares BOTH voice files before sending anything.
+English-only prepares one file; text_ru does not invoke speech at all. Each Telegram call waits for a
 valid returned message_id. This is confirmation of Telegram acceptance, not proof that the user
 read or listened. No timing sleeps are used to guess delivery. All sequences using this tool
 share one process lock. Other Hermes outputs/notifications can still arrive independently.
