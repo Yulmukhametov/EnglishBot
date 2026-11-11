@@ -371,3 +371,41 @@ def test_text_only_failure_is_journaled_and_not_retried(tmp_path):
     with pytest.raises(delivery.DeliveryError, match='incomplete'):
         delivery.deliver(payload, tmp_path, sender)
     assert len(sender.events) == 1
+
+
+def test_natural_alternative_is_separate_from_actual_corrections(tmp_path, payload):
+    payload.update(original_en="I will meet you at seven o'clock.",
+                   corrected_en="I will meet you at seven o'clock.",
+                   natural_en="I'll meet you at seven.",
+                   natural_note_ru='Исходная фраза правильная. Этот вариант короче и менее формальный.',
+                   feedback_ru='Грамматических ошибок здесь нет.')
+    delivery.validate(payload)
+    rendered = delivery.formatted_text(delivery.feedback_display(payload))
+    assert '<s>' not in rendered
+    assert "I will meet you at seven o&#x27;clock." in rendered
+    assert '<b>Как сказать в разговоре:</b>\nI&#x27;ll meet you at seven.' in rendered
+    assert '<b>О стиле:</b>' in rendered
+    assert "I'll meet you at seven." in delivery.feedback_speech(payload)
+    assert 'Грамматических ошибок здесь нет.' in delivery.feedback_speech(payload)
+    sender = Sender()
+    delivery.deliver(payload, tmp_path, sender, synth)
+    assert len(sender.events) == 4
+
+
+def test_natural_rewrite_does_not_change_minimal_error_diff(payload):
+    payload.update(original_en='Yesterday I go to work.', corrected_en='Yesterday I went to work.',
+                   natural_en='I went to work yesterday.', natural_note_ru='Это ещё один порядок слов для разговора.')
+    rendered = delivery.formatted_text(delivery.feedback_display(payload))
+    assert 'Yesterday I <s>go</s> <b>went</b> to work.' in rendered
+    assert '<b>Правильный вариант:</b>\nYesterday I went to work.' in rendered
+    assert '<b>Как сказать в разговоре:</b>\nI went to work yesterday.' in rendered
+
+
+@pytest.mark.parametrize('update', [
+    dict(natural_en='Hi.'),
+    dict(natural_en='Hi.', natural_note_ru='Разговорный вариант.'),
+    dict(original_en='Hello.', corrected_en='Hello.', natural_en='Привет.', natural_note_ru='Проще.'),
+])
+def test_natural_alternative_requires_paired_fields_and_source(payload, update):
+    with pytest.raises(delivery.DeliveryError):
+        delivery.validate(dict(payload, **update))

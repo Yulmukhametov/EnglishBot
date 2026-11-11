@@ -98,9 +98,21 @@ def feedback_display(payload):
                 edits.append("~~" + " ".join(before[i:j]) + "~~")
             if action in {"replace", "insert"}:
                 edits.append("**" + " ".join(after[k:m]) + "**")
-    return ("**Твоя фраза с исправлениями:**\n" + " ".join(edits)
-            + "\n\n**Правильный вариант:**\n" + payload["corrected_en"]
-            + "\n\n**Разбор:**\n" + "\n".join("> " + line for line in payload["feedback_ru"].split("\n")))
+    heading = "**Твоя фраза:**" if before == after else "**Твоя фраза с исправлениями:**"
+    result = heading + "\n" + " ".join(edits)
+    result += "\n\n**Правильный вариант:**\n" + payload["corrected_en"]
+    explanation = payload["feedback_ru"]
+    if "natural_en" in payload:
+        result += "\n\n**Как сказать в разговоре:**\n" + payload["natural_en"]
+        explanation += "\n\n**О стиле:** " + payload["natural_note_ru"]
+    return result + "\n\n**Разбор:**\n" + "\n".join("> " + line for line in explanation.split("\n"))
+
+
+def feedback_speech(payload):
+    result = payload["feedback_ru"]
+    if "natural_en" in payload:
+        result += " В разговоре можно сказать: " + payload["natural_en"] + " " + payload["natural_note_ru"]
+    return result
 
 
 def reply_display(payload):
@@ -151,7 +163,7 @@ def validate(payload):
     optional = {"mode", "gap_exercise"}
     if mode == "lesson":
         required.add("feedback_ru")
-        optional.update({"original_en", "corrected_en"})
+        optional.update({"original_en", "corrected_en", "natural_en", "natural_note_ru"})
     if not required <= set(payload) or set(payload) - required - optional:
         raise DeliveryError("Missing or unknown fields for response mode")
     if ("original_en" in payload) != ("corrected_en" in payload):
@@ -167,6 +179,17 @@ def validate(payload):
     for key in ("original_en", "corrected_en"):
         if key in payload and (not isinstance(payload[key], str) or not payload[key].strip() or len(payload[key]) > 1200):
             raise DeliveryError(f"{key} must contain 1–1200 characters")
+    if ("natural_en" in payload) != ("natural_note_ru" in payload):
+        raise DeliveryError("natural_en and natural_note_ru must be provided together")
+    if "natural_en" in payload:
+        if "original_en" not in payload:
+            raise DeliveryError("Natural alternative requires the original and minimally corrected sentence")
+        for key, limit in (("natural_en", 1200), ("natural_note_ru", 500)):
+            value = payload[key]
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                raise DeliveryError(f"{key} must contain 1–{limit} characters")
+        if not re.search(r"[A-Za-z]", payload["natural_en"]) or re.search(r"[А-Яа-яЁё]", payload["natural_en"]):
+            raise DeliveryError("Natural English alternative must be in English")
     if mode == "lesson" and len(spoken_text(feedback_display(payload)).encode("utf-16-le")) // 2 > 4000:
         raise DeliveryError("Formatted feedback too long; shorten the explanation")
     if "gap_exercise" in payload:
@@ -313,7 +336,7 @@ async def synthesize(payload, directory, settings=None):
         if not target.is_file() or target.stat().st_size == 0:
             raise DeliveryError("Speech generation did not produce audio")
 
-    segments = speech_segments(payload["feedback_ru"]) if payload.get("mode", "lesson") == "lesson" else []
+    segments = speech_segments(feedback_speech(payload)) if payload.get("mode", "lesson") == "lesson" else []
     pieces = [directory / f"feedback-part-{i:02d}.mp3" for i in range(len(segments))]
     exercise = payload.get("gap_exercise")
     if exercise:

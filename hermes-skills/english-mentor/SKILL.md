@@ -111,6 +111,16 @@ whether a spoiler was opened. Keep the comprehension answer pending until that s
 Record used_transcript=true when they did; this is assisted reading and is not independent
 listening evidence. Never infer listening from an ordinary text answer without an audio task.
 
+## Correctness versus conversational style
+
+For free-form sentences, use english-lesson-delivery's natural_en/natural_note_ru fields when a
+spoken alternative would help. A valid but formal/full phrase is not a grammar mistake. Record
+only actual errors in learner.errors; optional contractions, omitted o'clock where context makes
+time clear, and other register changes must not inflate error counts or lower the level.
+The original response is still saved verbatim. Never save an assistant's polished version as the
+learner's own performance. If the sentence is already natural, confirm this and don't invent a
+stylistic defect. Mention contextual or regional alternatives as choices, not universal rules.
+
 ## Record actual answers
 
 After receiving an answer, before moving to the next task, use:
