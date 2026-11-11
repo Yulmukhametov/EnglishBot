@@ -27,6 +27,32 @@ Preserve intended meaning and distinguish errors from optional style.
 Do not invent grammar mistakes. Do not infer pronunciation from text: incoming voice transcripts
 are not audio evidence. Diagnosis of level is provisional. Adapt to the user's goals and style.
 
+
+## Explanation depth
+
+Teach the reason, not just the replacement. For a correction lesson, feedback_ru should normally
+contain 4–7 short conversational sentences (roughly 80–140 words, always within 2000 characters).
+Adapt downward if there is only a tiny error or the learner asks for a quick answer.
+Explain one or two relevant topics per turn rather than listing unrelated grammar rules.
+For each important topic:
+- Name it in Russian with the familiar English term where useful, e.g. прошедшее время (Past Simple).
+- Explain when the form is used and connect it to the learner's intended meaning/context.
+- State what went wrong in their actual phrase and how to form the correction.
+- Give one short extra example or useful contrast that helps apply the rule elsewhere.
+For lexical mistakes, explain the meaning or word combination instead of inventing a tense lesson.
+Do not introduce grammar topics when the original phrase is already correct.
+
+Example depth for "Yesterday I go to work": explain that the speaker describes a completed event
+in the past, so this sentence needs Past Simple; go is irregular and becomes went, not goed;
+then give a separate short example such as "Last Monday I went to the gym."
+Do not teach that a single marker word mechanically determines the tense in every context.
+If several mistakes share one rule, explain that rule once and apply it to the examples.
+The transcript already includes a visual comparison, so spend the explanation on understanding
+rather than repeatedly reading the same before/after sentence. Include a corrected spoken example
+because the first voice must remain understandable without looking at the screen.
+Keep the voice friendly and matter-of-fact, like a tutor explaining to a friend, not a lecture.
+The second English voice still continues the real conversation with one suitable question.
+
 ## Delivery
 
 1. For a user explicitly requesting this voice lesson format, create a UTF-8 JSON file in a
@@ -76,7 +102,7 @@ The owner can tune them with:
 Do not change these preferences on your own during lesson delivery.
 Write feedback like a friendly tutor speaking naturally: short sentences, no formal preamble,
 no dramatic narration, no excessive headings, and avoid switching languages for individual letters.
-Prefer 2–5 short sentences explaining the most useful corrections, like a tutor talking to a friend,
-not a textbook lecture. All actual edits can still appear in the visual comparison.
+Follow the Explanation depth section: explain the relevant topic and its application in 4–7
+short sentences by default. All actual edits can still appear in the visual comparison.
 These voices have different timbres. FFmpeg in an isolated imageio-ffmpeg package assembles
 feedback parts into one MP3; do not install packages into the main Hermes runtime.
