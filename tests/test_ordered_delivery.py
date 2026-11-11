@@ -1,0 +1,149 @@
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("fcntl", reason="Hermes delivery tool targets Linux VPS")
+
+PATH = Path(__file__).parents[1] / 'hermes-skills/english-lesson-delivery/scripts/ordered_delivery.py'
+spec = importlib.util.spec_from_file_location('ordered_delivery', PATH)
+delivery = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(delivery)
+
+
+class Sender:
+    chat_id = 42
+
+    def __init__(self, failure=None):
+        self.events = []
+        self.failure = failure
+
+    def send(self, event):
+        self.events.append(event)
+        if self.failure == len(self.events):
+            raise TimeoutError('Secret token MUST NOT LEAK')
+        return 100 + len(self.events)
+
+    def send_voice(self, path):
+        assert path.exists()
+        return self.send(('voice', path.name))
+
+    def send_text(self, text, hidden=False):
+        return self.send(('text', text, hidden))
+
+
+async def synth(payload, directory):
+    files = [directory / 'feedback.mp3', directory / 'reply.mp3']
+    for file in files:
+        file.write_bytes(b'test audio')
+    return files
+
+
+@pytest.fixture
+def payload():
+    return dict(request_id='test-1', feedback_ru='Правильно: I went.', reply_en='Where did you go?')
+
+
+def test_four_messages_in_order_with_idempotence(tmp_path, payload):
+    sender = Sender()
+    state = delivery.deliver(payload, tmp_path, sender, synth)
+    assert sender.events == [
+        ('voice', 'feedback.mp3'), ('text', payload['feedback_ru'], False),
+        ('voice', 'reply.mp3'), ('text', payload['reply_en'], True)]
+    assert state['message_ids'] == [101, 102, 103, 104]
+    assert state['status'] == 'complete'
+    delivery.deliver(payload, tmp_path, sender, synth)
+    assert len(sender.events) == 4
+    changed = dict(payload, reply_en='Different')
+    with pytest.raises(delivery.DeliveryError, match='different text'):
+        delivery.deliver(changed, tmp_path, sender, synth)
+
+
+@pytest.mark.parametrize('failure', [1, 2, 3, 4])
+def test_failure_stops_without_retry_or_following_messages(tmp_path, payload, failure):
+    sender = Sender(failure)
+    with pytest.raises(delivery.DeliveryError) as error:
+        delivery.deliver(payload, tmp_path, sender, synth)
+    assert 'Secret token' not in str(error.value)
+    assert len(sender.events) == failure
+    saved = json.loads((tmp_path / 'test-1.json').read_text())
+    assert saved['message_ids'] == list(range(101, 100 + failure))
+    assert saved['status'] == 'stopped_unconfirmed'
+    with pytest.raises(delivery.DeliveryError, match='incomplete'):
+        delivery.deliver(payload, tmp_path, sender, synth)
+    assert len(sender.events) == failure
+
+
+def test_generation_failure_sends_nothing(tmp_path, payload):
+    async def broken(payload, directory):
+        raise RuntimeError('provider error')
+    sender = Sender()
+    with pytest.raises(delivery.DeliveryError, match='preparation failed'):
+        delivery.deliver(payload, tmp_path, sender, broken)
+    assert sender.events == []
+
+
+def test_parallel_delivery_cannot_interleave(tmp_path, payload):
+    import fcntl
+    with (tmp_path / 'delivery.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sender = Sender()
+        with pytest.raises(delivery.DeliveryError, match='Another lesson'):
+            delivery.deliver(payload, tmp_path, sender, synth)
+        assert sender.events == []
+
+
+def test_telegram_text_escapes_html_and_hides_only_english(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b'{"ok":true,"result":{"message_id":8,"chat":{"id":42}}}'
+
+    def urlopen(request, timeout):
+        requests.append(request.data.decode())
+        return Response()
+    monkeypatch.setattr(delivery.urllib.request, 'urlopen', urlopen)
+    sender = delivery.Telegram('123:secret', 42)
+    assert sender.send_text('a < b & c', hidden=True) == 8
+    assert '<span class="tg-spoiler">a &lt; b &amp; c</span>' in requests[0]
+    sender.send_text('Visible')
+    assert 'tg-spoiler' not in requests[1]
+
+
+def test_invalid_ack_is_not_treated_as_delivery(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return b'{"ok":true,"result":{"message_id":8,"chat":{"id":99}}}'
+    monkeypatch.setattr(delivery.urllib.request, 'urlopen', lambda *a, **k: Response())
+    with pytest.raises(delivery.DeliveryError, match='acknowledgement invalid'):
+        delivery.Telegram('123:secret', 42).send_text('Hi')
+
+
+@pytest.mark.parametrize('allowed', ['42,99', '', '@someone'])
+def test_credentials_refuse_multiple_or_unnamed_recipients(tmp_path, monkeypatch, allowed):
+    for key in ('TELEGRAM_ALLOWED_USERS', 'TELEGRAM_ALLOW_ALL_USERS', 'TELEGRAM_BOT_TOKEN'):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / '.env').write_text(f'TELEGRAM_BOT_TOKEN=123:secret\nTELEGRAM_ALLOWED_USERS={allowed}\n')
+    with pytest.raises(delivery.DeliveryError, match='exactly one numeric'):
+        delivery.credentials(tmp_path)
+
+
+def test_credentials_read_quoted_single_owner_without_exposing_token(tmp_path, monkeypatch):
+    for key in ('TELEGRAM_ALLOWED_USERS', 'TELEGRAM_ALLOW_ALL_USERS', 'TELEGRAM_BOT_TOKEN'):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / '.env').write_text('TELEGRAM_BOT_TOKEN="123:secret"\nTELEGRAM_ALLOWED_USERS="42"\n')
+    assert delivery.credentials(tmp_path) == ('123:secret', 42)
