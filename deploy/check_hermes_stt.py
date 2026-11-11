@@ -6,6 +6,7 @@ speech-to-text requests; does not call the tutor or send Telegram messages.
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -62,6 +63,28 @@ def transcribe(audio, key, language):
     return {"language": result.get("language_code"), "text": result.get("text", "")[:4000]}
 
 
+def error_detail(response, key):
+    """Only expose known error fields, bounded and with credential redaction."""
+    try:
+        payload = json.loads(response.read(16384))
+    except (OSError, ValueError):
+        return "Ответ без JSON-описания; тело ответа скрыто."
+    if not isinstance(payload, dict):
+        return "Нестандартный формат ошибки; тело ответа скрыто."
+    detail = payload.get("detail", payload)
+    if isinstance(detail, dict):
+        selected = {name: detail[name] for name in ("status", "code", "message")
+                    if isinstance(detail.get(name), (str, int))}
+        text = json.dumps(selected, ensure_ascii=False) if selected else "Нет описания ошибки."
+    elif isinstance(detail, str):
+        text = json.dumps(detail, ensure_ascii=False)
+    else:
+        text = "Нет текстового описания ошибки."
+    text = text.replace(key, "[KEY REDACTED]")
+    text = re.sub(r"\bsk[-_][A-Za-z0-9_-]+", "[KEY REDACTED]", text)
+    return text[:1200]
+
+
 def main():
     home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
     audio = latest_audio(home)
@@ -83,8 +106,8 @@ def main():
         try:
             result = transcribe(audio, key, language)
         except urllib.error.HTTPError as exc:
-            # Never print provider bodies, request objects, headers or credentials.
-            print(f"ElevenLabs HTTP {exc.code}. Проверь доступ API и баланс.", flush=True)
+            # No raw body, request object or headers; only redacted error fields.
+            print(f"ElevenLabs HTTP {exc.code}: {error_detail(exc, key)}", flush=True)
             return 1
         except (OSError, ValueError):
             print("Не удалось получить корректный ответ ElevenLabs; ключ не выводится.", flush=True)
