@@ -150,7 +150,7 @@ class LearningStore:
 
     def record(self, data):
         exact_keys(data, ["event_id", "phase", "response", "source", "notes", "errors"],
-                   ["task_id", "used_transcript", "declined", "answer"])
+                   ["task_id", "used_transcript", "declined", "answer", "vocabulary_gaps"])
         event_id = text(data["event_id"], "event_id", 100)
         response = text(data["response"], "response", 4000)
         notes = text(data["notes"], "notes", 1500, empty=True)
@@ -175,6 +175,20 @@ class LearningStore:
             if item["original"] not in response:
                 raise LearningError("Error evidence must be an exact substring of the learner response")
             errors.append(item)
+        gaps = data.get("vocabulary_gaps", [])
+        if not isinstance(gaps, list) or len(gaps) > 8:
+            raise LearningError("vocabulary_gaps must contain up to 8 words or expressions")
+        vocabulary = []
+        for gap in gaps:
+            exact_keys(gap, ["russian", "english", "example"])
+            entry = {key: text(value, key, 400) for key, value in gap.items()}
+            if not re.search(r"[А-Яа-яЁё]", entry["russian"]) or entry["russian"] not in response:
+                raise LearningError("Russian vocabulary hint must occur verbatim in the learner response")
+            if not re.search(r"[A-Za-z]", entry["english"]) or re.search(r"[А-Яа-яЁё]", entry["english"]):
+                raise LearningError("English translation must use English words")
+            if not re.search(r"[A-Za-z]", entry["example"]):
+                raise LearningError("Vocabulary example must contain English")
+            vocabulary.append(entry)
         task_id = data.get("task_id")
         digest = hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self.db() as db:
@@ -191,7 +205,7 @@ class LearningStore:
             item = dict(event_id=event_id, phase=data["phase"], task_id=task_id, response=response,
                         source=data["source"], notes=notes, errors=errors, run_id=profile["run_id"],
                         result="observed", used_transcript=data.get("used_transcript"),
-                        declined=data.get("declined", False))
+                        declined=data.get("declined", False), vocabulary_gaps=vocabulary)
             if data["phase"] == "diagnostic":
                 task = self.pending(profile, self.attempts(db))
                 if not task or task_id != task["id"]:
@@ -223,6 +237,21 @@ class LearningStore:
         return sorted((dict(topic=tag, answers=count) for tag, count in topics.items()),
                       key=lambda entry: (-entry["answers"], entry["topic"]))
 
+    def vocabulary_summary(self, attempts):
+        words = {}
+        for attempt in attempts:
+            seen = set()
+            for entry in attempt.get("vocabulary_gaps", []):
+                key = (entry["russian"].casefold(), entry["english"].casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                if key not in words:
+                    words[key] = dict(entry, answers=0, last_seen=attempt["created"])
+                words[key].update(example=entry["example"], last_seen=attempt["created"])
+                words[key]["answers"] += 1
+        return sorted(words.values(), key=lambda entry: entry["last_seen"], reverse=True)[:100]
+
     def build_plan(self, profile, attempts):
         priorities = [item["topic"] for item in self.error_summary(attempts)][:2]
         focuses = ["Знакомство и разговор под твою цель", "Практика основной трудности",
@@ -235,6 +264,7 @@ class LearningStore:
         listening = minutes - practice - review
         return [dict(day=index + 1, focus=focus, goal=profile["goal"],
                      interests=profile["interests"], priority_topics=priorities,
+                     vocabulary=[entry["english"] for entry in self.vocabulary_summary(attempts)][:5],
                      activities=[dict(kind="practice", minutes=practice),
                                  dict(kind="review", minutes=review),
                                  dict(kind="listening", minutes=listening)])
@@ -285,7 +315,8 @@ class LearningStore:
         return dict(profile=profile, answers_recorded=len(attempts), recent_answers=attempts[-8:],
                     diagnostic_answers=[item for item in attempts if item["phase"] == "diagnostic"
                                         and item["run_id"] == profile["run_id"]],
-                    errors=self.error_summary(attempts), next=self.next_task())
+                    errors=self.error_summary(attempts), vocabulary_gaps=self.vocabulary_summary(attempts),
+                    next=self.next_task())
 
 
 def main():

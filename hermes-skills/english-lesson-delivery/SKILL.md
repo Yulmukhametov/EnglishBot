@@ -29,6 +29,10 @@ The program strips formatting markers before speech, uses Russian speech for Cyr
 English speech for Latin examples, and assembles one feedback voice note with a short configurable gap at language switches (100 ms by default). Very quiet edge silence is shortened.
 The English continuation is always spoken by the English voice. Both text messages retain
 supported bold formatting; the whole second text is also under a spoiler.
+Russian words inside an English sentence may be intentional vocabulary hints. Translate them
+in context, explain the new word and show it in the corrected sentence; don't label the switch
+itself a grammar error. Follow english-mentor's mixed-language rules and clarification workflow
+when ASR produces nonsense. Never guess a Russian word from garbled English as if it were certain.
 Preserve intended meaning and distinguish errors from optional style.
 Do not invent grammar mistakes. Do not infer pronunciation from text: incoming voice transcripts
 are not audio evidence. Diagnosis of level is provisional. Adapt to the user's goals and style.

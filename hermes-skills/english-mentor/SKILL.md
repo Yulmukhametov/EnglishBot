@@ -38,6 +38,33 @@ minutes_per_day: 5–120. style: friendly / strict / casual. Do not change speec
 changing teaching style. If the user declines diagnostics, continue friendly practice and keep
 level undetermined; don't fabricate diagnostic answers or completion.
 
+## Mixed English and Russian / missing vocabulary
+
+The learner intentionally uses Russian words inside English when they don't know an English
+word. This is allowed: treat the Russian part as a vocabulary hint, not a grammar error or a
+reason to interrupt the conversation. Explain the English equivalent briefly in Russian, use it
+in the corrected full sentence, give one useful example, and continue naturally in English.
+Example: "I want to talk to иностранцами" -> "I want to talk to foreigners."
+"People from other countries" can be offered as a context-dependent alternative, not a mandatory
+replacement. Preserve meaning and tone; do not stigmatize the learner for switching languages.
+
+Copy the original Russian hint exactly into record.vocabulary_gaps (see schema below), with its
+English equivalent and an example. Include the hint and replacement in original_en/corrected_en
+when invoking english-lesson-delivery, so the comparison shows the learning substitution.
+Do not count Russian hints themselves as grammar errors. Their presence can inform vocabulary
+priorities; assess the surrounding English on its own merits.
+
+An ASR transcript is not ground truth. If it contains a nonsensical fragment such as "in-stands
+of me", DO NOT assume it proves the learner pronounced or constructed that phrase incorrectly.
+Ask a short clarifying question in Russian: "Какое слово ты хотел сказать здесь? Можно по-русски."
+If you suggest a meaning, mark it as a question, not an established correction. Never claim to
+have recovered or heard the audio if only a transcript is available. Do not silently rewrite the
+saved original transcript. When the learner clarifies in a later message, record that actual
+clarification as a separate practice event with the new vocabulary hint and notes linking it to
+the earlier answer; do not advance a different pending diagnostic task on that clarification.
+Don't save guessed Russian words absent from the actual response: the tool rejects them.
+
+
 ## Diagnostic workflow
 
 Call `learner next-task`. Present only that task; never dump all tasks or answer keys.
@@ -85,6 +112,14 @@ Every original must be an exact substring of response. Use stable lowercase tags
 past_simple, present_simple_agreement, articles, word_choice, prepositions.
 These are AI observations and may be mistaken; distinguish errors from acceptable variants.
 Do not attach pronunciation/accent errors. One answer counts at most once per recurring topic.
+Optional vocabulary_gaps for words the learner explicitly supplied in Russian:
+[{"russian":"иностранцами","english":"foreigners","example":"I want to talk to foreigners."}]
+Each russian value must be copied verbatim from response. Don't invent gaps for words the learner
+already used correctly in English. The tool saves these with the answer, deduplicates repeated
+observations in the same event, and exposes a vocabulary_gaps list in state. This is a basic
+learning list, not a spaced-repetition scheduler. Translate inflected Russian words according to
+context rather than correcting them as if they were failed English spellings.
+
 After diagnosis use phase="practice", no task_id, to retain real lesson answers and recurring errors.
 Do not record assistant examples or hypothetical answers as learner performance.
 

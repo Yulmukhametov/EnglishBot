@@ -238,3 +238,57 @@ def test_installed_cli_persists_state_between_processes(tmp_path):
     assert data['data']['profile']['goal'] == 'Travel'
     assert data['data']['next']['task']['id'] == 'introduction'
     assert '123:fake' not in result.stdout
+
+
+def test_mixed_language_hint_is_saved_without_being_a_grammar_error(store):
+    ready(store)
+    gap = dict(russian='иностранцами', english='foreigners', example='I want to talk to foreigners.')
+    payload = dict(event_id='mixed-1', phase='practice', response='I want to talk to иностранцами.',
+                   source='voice_transcript', notes='Used a Russian hint for missing vocabulary.',
+                   errors=[], vocabulary_gaps=[gap, gap])
+    store.record(payload)
+    store.record(payload)
+    reopened = learning.LearningStore(store.path, 42)
+    state = reopened.state()
+    assert state['errors'] == []
+    assert state['vocabulary_gaps'][0]['english'] == 'foreigners'
+    assert state['vocabulary_gaps'][0]['answers'] == 1
+    assert state['recent_answers'][0]['response'] == payload['response']
+    assert state['next']['task']['id'] == 'introduction'
+    store.record(dict(payload, event_id='mixed-2', vocabulary_gaps=[gap]))
+    assert store.state()['vocabulary_gaps'][0]['answers'] == 2
+
+
+def test_asr_nonsense_cannot_create_a_guessed_word_but_clarification_can(store):
+    ready(store)
+    gap = dict(russian='иностранцы', english='foreigners', example='I talk to foreigners.')
+    payload = dict(event_id='asr-1', phase='practice', response='I talk with the in-stands of me.',
+                   source='voice_transcript', notes='Unclear ASR; needs clarification.',
+                   errors=[], vocabulary_gaps=[gap])
+    with pytest.raises(learning.LearningError, match='verbatim'):
+        store.record(payload)
+    store.record(dict(payload, vocabulary_gaps=[]))
+    store.record(dict(payload, event_id='clarification-1', response='Я сказал иностранцы.',
+                      source='text', notes='Clarification of asr-1.'))
+    state = store.state()
+    assert state['recent_answers'][0]['response'] == payload['response']
+    assert state['vocabulary_gaps'][0]['russian'] == 'иностранцы'
+    assert state['next']['task']['id'] == 'introduction'
+
+
+def test_bad_vocabulary_input_does_not_write_an_answer(store):
+    ready(store)
+    payload = dict(event_id='bad-word', phase='practice', response='иностранцы', source='text',
+                   notes='', errors=[], vocabulary_gaps=[dict(russian='иностранцы', english='иностранцы', example='Hi')])
+    with pytest.raises(learning.LearningError, match='English translation'):
+        store.record(payload)
+    assert store.state()['answers_recorded'] == 0
+
+
+def test_new_vocabulary_is_added_to_existing_weekly_plan(store):
+    complete(store)
+    store.finalize(assessment())
+    store.record(dict(event_id='new-word-plan', phase='practice', response='I talk to иностранцами.',
+                      source='voice_transcript', notes='', errors=[], vocabulary_gaps=[
+                          dict(russian='иностранцами', english='foreigners', example='I talk to foreigners.')]))
+    assert store.state()['profile']['plan'][0]['vocabulary'] == ['foreigners']
